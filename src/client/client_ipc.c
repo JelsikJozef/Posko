@@ -74,3 +74,14 @@ int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
     }
     return 0;
 }
+
+int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
+    rw_set_global_mode_t msg;
+    msg.new_mode = mode;
+
+    if (rw_send_msg(fd, RW_MSG_SET_GLOBAL_MODE, &msg, sizeof(msg)) != 0) {
+        log_error("Failed to send SET_GLOBAL_MODE message to server");
+        return -1;
+    }
+    return 0;
+}
