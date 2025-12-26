@@ -4,11 +4,27 @@
 
 #ifndef SEMPRACA_SERVER_IPC_H
 #define SEMPRACA_SERVER_IPC_H
-#include <stddef.h>
 
-void server_ipc_init(const char *socket_path);
-void server_ipc_accept_loop(void);
-void server_ipc_broadcast(void *msg, size_t size);
+/*server_ipc.h - IPC layer of server(AF_UNIX socket)
+ *
+ *Responsibilities:
+ *-create socket
+ *-accept client connections
+ *-process basic requests(JOIN-> WELCOME)
+ *
+ *Does not containt simulation logic
+ */
+
+#include <pthread.h>
+
+/*context declaration*/
+struct server_context;
+
+/*initializes socket + start of accept thread*/
+int server_ipc_start(const char *socket_path, struct server_context *ctx);
+
+/*correct shutdown of IPC layer*/
+void server_ipc_stop(void);
 
 
 #endif //SEMPRACA_SERVER_IPC_H
