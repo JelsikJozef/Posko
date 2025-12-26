@@ -16,15 +16,69 @@
 #include <errno.h>
 #include <pthread.h>
 
+/**
+ * @file server_ipc.c
+ * @brief Implementation of the server IPC layer.
+ */
+
+/**
+ * @brief Listening socket file descriptor.
+ */
 static int listen_fd = -1;
+
+/**
+ * @brief Buffer holding the active socket path.
+ */
 static char socket_path_buf[108];
+
+/**
+ * @brief Thread running the accept loop.
+ */
 static pthread_t accept_thread;
+
+/**
+ * @brief Global pointer to the shared server context.
+ */
 static struct server_context *g_ctx = NULL;
 
 /*forward declarations*/
+
+/**
+ * @brief Accept-loop thread function.
+ *
+ * Repeatedly accepts clients and spawns a detached thread for each.
+ *
+ * @param arg Unused.
+ * @return Always NULL.
+ */
 static void *accept_loop(void *arg);
+
+/**
+ * @brief Per-client worker thread function.
+ *
+ * Performs the JOIN/WELCOME handshake, registers the client in the server context,
+ * and then processes incoming requests until disconnect.
+ *
+ * @param arg Pointer to dynamically allocated `int` containing client fd.
+ * @return Always NULL.
+ */
 static void *client_thread(void *arg);
+
+/**
+ * @brief Handle initial JOIN request and send WELCOME.
+ *
+ * @param client_fd Client socket fd.
+ * @return 0 on success, -1 on protocol/IO error.
+ */
 static int handle_join(int client_fd);
+
+/**
+ * @brief Broadcast a global-mode-changed notification to all clients.
+ *
+ * @param ctx Server context.
+ * @param new_mode New mode (wire format).
+ * @param changed_by_pid Process id of the client who triggered the change (0 if unknown).
+ */
 static void broadcast_global_mode_changed(struct server_context *ctx, rw_wire_global_mode_t new_mode, uint32_t changed_by_pid);
 
 typedef struct {
@@ -35,6 +89,13 @@ typedef struct {
 *public API
 *======================================================================*/
 
+/**
+ * @brief Start listening on a Unix domain socket and spawn accept thread.
+ *
+ * @param socket_path Filesystem socket path.
+ * @param ctx Shared server context.
+ * @return 0 on success, -1 on invalid args; terminates the process on fatal socket errors.
+ */
 int server_ipc_start(const char *socket_path, struct server_context *ctx) {
     struct sockaddr_un addr;
 
@@ -73,6 +134,9 @@ int server_ipc_start(const char *socket_path, struct server_context *ctx) {
     return 0;
 }
 
+/**
+ * @brief Stop IPC: close listening socket and unlink the socket path.
+ */
 void server_ipc_stop(void) {
     if (listen_fd >= 0) {
         close(listen_fd);
@@ -85,6 +149,12 @@ void server_ipc_stop(void) {
  *Accept loop
  *======================================================================*/
 
+/**
+ * @brief Accept loop thread body.
+ *
+ * @param arg Unused.
+ * @return NULL.
+ */
 static void *accept_loop(void *arg) {
     (void)arg;
 
@@ -122,6 +192,12 @@ static void *accept_loop(void *arg) {
 /*======================================================================
  *Client thread
  *======================================================================*/
+/**
+ * @brief Per-client thread body.
+ *
+ * @param arg Heap-allocated pointer to client fd.
+ * @return NULL.
+ */
 static void *client_thread(void *arg) {
     int client_fd = *(int *)arg;
     free(arg);
@@ -193,6 +269,12 @@ static void *client_thread(void *arg) {
 /*======================================================================
  *Handle client connection
  *======================================================================*/
+/**
+ * @brief Process a client's JOIN request and send WELCOME.
+ *
+ * @param client_fd Client socket.
+ * @return 0 on success, -1 on error.
+ */
 static int handle_join(int client_fd) {
     rw_msg_hdr_t hdr;
 
@@ -247,12 +329,27 @@ static int handle_join(int client_fd) {
     return 0;
 }
 
+/**
+ * @brief Send a GLOBAL_MODE_CHANGED message to a single client.
+ *
+ * Used as a callback for `server_context_for_each_client()`.
+ *
+ * @param fd Client socket.
+ * @param user Pointer to a broadcast context (see `broadcast_mode_ctx_t`).
+ */
 static void send_global_mode_changed(int fd, void *user) {
     broadcast_mode_ctx_t *ctx = (broadcast_mode_ctx_t *)user;
     rw_send_msg(fd, RW_MSG_GLOBAL_MODE_CHANGED,
                 &ctx->msg, sizeof(ctx->msg));
 }
 
+/**
+ * @brief Broadcast a GLOBAL_MODE_CHANGED notification to all connected clients.
+ *
+ * @param ctx Server context.
+ * @param new_mode New mode in wire representation.
+ * @param changed_by_pid PID of the client who triggered the change (0 if unknown).
+ */
 static void broadcast_global_mode_changed(server_context_t *ctx,
                                         rw_wire_global_mode_t new_mode,
                                         uint32_t changed_by_pid) {

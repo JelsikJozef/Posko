@@ -8,6 +8,22 @@
 
 #include <unistd.h>
 
+/**
+ * @file server_main.c
+ * @brief Minimal server entry point.
+ *
+ * This binary creates and configures a `server_context_t`, starts the IPC subsystem,
+ * and then keeps running.
+ */
+
+/**
+ * @brief Program entry point.
+ *
+ * Initializes the server state, starts listening on a Unix domain socket and then
+ * blocks forever.
+ *
+ * @return This function does not normally return.
+ */
 int main(void) {
     server_context_t ctx;
     server_context_init(&ctx);
