@@ -129,8 +129,8 @@ static void handle_client(int client_fd) {
     memset(&welcome_msg, 0, sizeof(welcome_msg));
 
     welcome_msg.world_kind = (rw_wire_world_kinds_t)g_ctx->world_kind;
-    welcome_msg.size.width = (uint32_t)g_ctx->size.width;
-    welcome_msg.size.height = (uint32_t)g_ctx->size.height;
+    welcome_msg.size.width = (uint32_t)g_ctx->world_size.width;
+    welcome_msg.size.height = (uint32_t)g_ctx->world_size.height;
 
     welcome_msg.probs.p_up = g_ctx->probs.p_up;
     welcome_msg.probs.p_down = g_ctx->probs.p_down;

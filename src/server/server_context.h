@@ -8,15 +8,15 @@
 #include <pthread.h>
 #include "../common/types.h"
 
-typedef struct {
-    world_size_t size;
-    int *obstacles;
-    int total_reps;
-    int current_rep;
-    int k;
+typedef struct server_context{
+    world_kinds_t world_kind;
+    world_size_t world_size;
     move_probs_t probs;
 
-    pthread_mutex_t stats_lock;
+    uint32_t k_max_steps;
+    uint32_t total_reps;
+    uint32_t current_rep;
+
     global_mode_t global_mode;
 }server_context_t;
 
