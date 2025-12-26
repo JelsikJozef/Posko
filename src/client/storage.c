@@ -3,3 +3,10 @@
 //
 
 #include "storage.h"
+
+/**
+ * @file storage.c
+ * @brief Implementation unit for persistence helpers.
+ *
+ * Persistence is not implemented yet; functions may be added here in the future.
+ */

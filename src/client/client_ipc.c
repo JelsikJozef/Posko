@@ -13,6 +13,17 @@
 #include <unistd.h>
 #include <string.h>
 
+/**
+ * @file client_ipc.c
+ * @brief Implementation of client-side IPC helpers.
+ */
+
+/**
+ * @brief Connect to the server AF_UNIX socket.
+ *
+ * @param socket_path Socket path on the filesystem.
+ * @return Connected socket FD (>=0) on success, -1 on failure.
+ */
 int client_ipc_connect(const char* socket_path) {
     if (!socket_path) {
         return -1;
@@ -37,6 +48,12 @@ int client_ipc_connect(const char* socket_path) {
     return fd;
 }
 
+/**
+ * @brief Send a JOIN request containing the current process ID.
+ *
+ * @param fd Connected client socket.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_send_join(int fd) {
     rw_join_t join;
     join.pid = (int32_t)getpid();
@@ -48,6 +65,16 @@ int client_ipc_send_join(int fd) {
     return 0;
 }
 
+/**
+ * @brief Receive and validate the server WELCOME message.
+ *
+ * This is a blocking read. The function expects that the next message on the socket
+ * is a WELCOME message.
+ *
+ * @param fd Connected client socket.
+ * @param out_welcome Output structure to fill.
+ * @return 0 on success, -1 on protocol/IO error.
+ */
 int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
     if (!out_welcome) {
         return -1;
@@ -75,6 +102,13 @@ int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
     return 0;
 }
 
+/**
+ * @brief Send a SET_GLOBAL_MODE request.
+ *
+ * @param fd Connected client socket.
+ * @param mode New global mode in wire format.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
     rw_set_global_mode_t msg;
     msg.new_mode = mode;

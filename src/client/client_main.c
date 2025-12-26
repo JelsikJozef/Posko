@@ -10,6 +10,22 @@
 #include <unistd.h>
 #include <sys/select.h>
 
+/**
+ * @file client_main.c
+ * @brief Minimal interactive client used to test the IPC protocol.
+ *
+ * The client connects to the server, sends JOIN, prints WELCOME parameters, and then
+ * allows the user to change the global mode using single-key commands.
+ */
+
+/**
+ * @brief Drain and discard a payload from a socket.
+ *
+ * Used to skip over message payloads that the client does not yet understand.
+ *
+ * @param fd Socket file descriptor to read from.
+ * @param len Number of bytes to read and discard.
+ */
 static void drain_payload(int fd, uint32_t len) {
     char buf[256];
     uint32_t left = len;
@@ -22,6 +38,16 @@ static void drain_payload(int fd, uint32_t len) {
     }
 }
 
+/**
+ * @brief Receive one server message and handle it.
+ *
+ * Currently supported:
+ * - `RW_MSG_GLOBAL_MODE_CHANGED`
+ *
+ * Other message types are ignored (payload is drained).
+ *
+ * @param fd Connected socket to the server.
+ */
 static void handle_server_message(int fd) {
     rw_msg_hdr_t hdr;
     if (rw_recv_hdr(fd, &hdr) != 0) {
@@ -41,12 +67,22 @@ static void handle_server_message(int fd) {
         return;
     }
 
-    /* iné správy zatiaľ ignorujeme */
+    /* other messages are ignored for now */
     if (hdr.payload_len > 0) {
         drain_payload(fd, hdr.payload_len);
     }
 }
 
+/**
+ * @brief Handle a single key press from stdin.
+ *
+ * Controls:
+ * - 'i' => request INTERACTIVE mode
+ * - 's' => request SUMMARY mode
+ * - 'q' => quit immediately
+ *
+ * @param fd Connected socket to the server.
+ */
 static void handle_stdin(int fd) {
     int c = getchar();
     if (c == EOF) {
@@ -72,6 +108,15 @@ static void handle_stdin(int fd) {
     }
 }
 
+/**
+ * @brief Program entry point.
+ *
+ * Usage: `client <socket_path>`
+ *
+ * @param argc Argument count.
+ * @param argv Argument vector.
+ * @return 0 on normal exit, non-zero on argument/connection errors.
+ */
 int main(int argc, char **argv) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <socket_path>\n", argv[0]);
@@ -129,5 +174,4 @@ int main(int argc, char **argv) {
     }
 
     /* unreachable */
-    return 0;
 }
