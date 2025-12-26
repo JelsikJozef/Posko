@@ -26,4 +26,6 @@ int client_ipc_send_join(int fd);
 /*waits for WELCOME message from server; returns 0 if ok , else -1 */
 int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome);
 
+int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode);
+
 #endif //SEMPRACA_CLIENT_IPC_H

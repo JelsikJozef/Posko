@@ -6,8 +6,9 @@ BUILD_DIR = build
 CLIENT = client
 SERVER = server
 
-CLIENT_SRC = $(SRC_DIR)/client.c
-SERVER_SRC = $(SRC_DIR)/server.c
+COMMON_SRC = $(wildcard $(SRC_DIR)/common/*.c)
+CLIENT_SRC = $(wildcard $(SRC_DIR)/client/*.c)
+SERVER_SRC = $(wildcard $(SRC_DIR)/server/*.c)
 
 CLIENT_BIN = $(BUILD_DIR)/$(CLIENT)
 SERVER_BIN = $(BUILD_DIR)/$(SERVER)
@@ -19,11 +20,11 @@ all: client server
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)
 
-client: $(BUILD_DIR) $(CLIENT_SRC)
-	$(CC) $(CFLAGS) $(CLIENT_SRC) -o $(CLIENT_BIN)
+client: $(BUILD_DIR) $(COMMON_SRC) $(CLIENT_SRC)
+	$(CC) $(CFLAGS) $(COMMON_SRC) $(CLIENT_SRC) -o $(CLIENT_BIN)
 
-server: $(BUILD_DIR) $(SERVER_SRC)
-	$(CC) $(CFLAGS) $(SERVER_SRC) -o $(SERVER_BIN)
+server: $(BUILD_DIR) $(COMMON_SRC) $(SERVER_SRC)
+	$(CC) $(CFLAGS) $(COMMON_SRC) $(SERVER_SRC) -o $(SERVER_BIN) -pthread
 
 clean:
 	rm -rf $(BUILD_DIR)

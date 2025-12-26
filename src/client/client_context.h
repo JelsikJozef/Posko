@@ -6,6 +6,7 @@
 #define SEMPRACA_CLIENT_CONTEXT_H
 
 #include "../common/protocol.h"
+#include "../common/types.h"
 
 typedef struct {
     int socket_fd;

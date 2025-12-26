@@ -10,27 +10,22 @@
 
 int main(void) {
     server_context_t ctx;
+    server_context_init(&ctx);
 
+    /* tu si nastavíš parametre simulácie */
     ctx.world_kind = WORLD_WRAP;
     ctx.world_size.width = 10;
     ctx.world_size.height = 10;
-
     ctx.probs.p_up = 0.25;
     ctx.probs.p_down = 0.25;
     ctx.probs.p_left = 0.25;
     ctx.probs.p_right = 0.25;
-
     ctx.k_max_steps = 100;
     ctx.total_reps = 50;
     ctx.current_rep = 0;
     ctx.global_mode = MODE_SUMMARY;
 
-    const char *socket_path = "/tmp/rw_test.sock";
+    server_ipc_start("/tmp/rw_test.sock", &ctx);
 
-    server_ipc_start(socket_path, &ctx);
-
-    log_info("Server running. Press Ctrl+C to stop.");
-    while (1) {
-        pause();
-    }
+    while (1) pause();
 }
