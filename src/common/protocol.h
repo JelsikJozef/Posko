@@ -373,6 +373,20 @@ typedef struct {
 int rw_send_msg(int fd, rw_msg_type_t type, const void *payload, uint32_t payload_len);
 
 /**
+ * @brief Best-effort, non-blocking variant of @ref rw_send_msg.
+ *
+ * This is intended for broadcast-style notifications (PROGRESS/END/etc.) where
+ * blocking the producer thread would be worse than dropping an update for a
+ * slow client.
+ *
+ * Semantics:
+ * - The socket is not modified (no O_NONBLOCK flag changes).
+ * - Uses MSG_DONTWAIT, so it may fail with EAGAIN/EWOULDBLOCK.
+ * - Returns 0 on success; -1 on any error (including would-block).
+ */
+int rw_send_msg_noblock(int fd, rw_msg_type_t type, const void *payload, uint32_t payload_len);
+
+/**
  * @brief Receive a message header.
  *
  * Blocking read: reads exactly `sizeof(rw_msg_hdr_t)` bytes.

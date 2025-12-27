@@ -640,8 +640,8 @@ static int handle_join(int client_fd) {
  */
 static void send_global_mode_changed(int fd, void *user) {
     broadcast_mode_ctx_t *ctx = (broadcast_mode_ctx_t *)user;
-    rw_send_msg(fd, RW_MSG_GLOBAL_MODE_CHANGED,
-                &ctx->msg, sizeof(ctx->msg));
+    (void)rw_send_msg_noblock(fd, RW_MSG_GLOBAL_MODE_CHANGED,
+                              &ctx->msg, sizeof(ctx->msg));
 }
 
 /**
@@ -689,7 +689,7 @@ static void send_ack(int fd, uint16_t req_type, uint16_t status) {
 
 static void send_end_fn(int fd, void *user) {
     const rw_end_t *e = (const rw_end_t *)user;
-    rw_send_msg(fd, RW_MSG_END, e, sizeof(*e));
+    (void)rw_send_msg_noblock(fd, RW_MSG_END, e, sizeof(*e));
 }
 
 static void broadcast_end_msg(server_context_t *ctx, uint32_t reason) {

@@ -19,7 +19,8 @@ typedef struct {
 
 static void send_progress_fn(int fd, void *user) {
     broadcast_progress_ctx_t *b = (broadcast_progress_ctx_t*)user;
-    rw_send_msg(fd, RW_MSG_PROGRESS, &b->msg, sizeof(b->msg));
+    /* Best-effort: never block the simulation thread on slow clients. */
+    (void)rw_send_msg_noblock(fd, RW_MSG_PROGRESS, &b->msg, sizeof(b->msg));
 }
 
 static void broadcast_progress(server_context_t *ctx,

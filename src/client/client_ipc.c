@@ -125,54 +125,119 @@ int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
     return 0;
 }
 
+static void drain_payload(int fd, uint32_t len) {
+    char buf[256];
+    uint32_t left = len;
+    while (left > 0) {
+        uint32_t n = left > sizeof(buf) ? (uint32_t)sizeof(buf) : left;
+        if (rw_recv_payload(fd, buf, n) != 0) {
+            break;
+        }
+        left -= n;
+    }
+}
+
+/*
+ * Consume and optionally log asynchronous server notifications that may arrive
+ * between request/response messages (e.g., PROGRESS while we're waiting for ACK).
+ * Returns 1 if the message was handled/consumed, 0 if caller should handle it.
+ */
+static int consume_async_msg(int fd, const rw_msg_hdr_t *hdr) {
+    if (!hdr) return 0;
+
+    if (hdr->type == RW_MSG_PROGRESS && hdr->payload_len == sizeof(rw_progress_t)) {
+        rw_progress_t p;
+        (void)rw_recv_payload(fd, &p, sizeof(p));
+        log_info("PROGRESS: %u/%u", p.current_rep, p.total_reps);
+        return 1;
+    }
+
+    if (hdr->type == RW_MSG_END && hdr->payload_len == sizeof(rw_end_t)) {
+        rw_end_t e;
+        (void)rw_recv_payload(fd, &e, sizeof(e));
+        log_info("END: reason=%u", (unsigned)e.reason);
+        return 1;
+    }
+
+    if (hdr->type == RW_MSG_GLOBAL_MODE_CHANGED && hdr->payload_len == sizeof(rw_global_mode_changed_t)) {
+        rw_global_mode_changed_t m;
+        (void)rw_recv_payload(fd, &m, sizeof(m));
+        log_info("GLOBAL_MODE_CHANGED: new_mode=%u", (unsigned)m.new_mode);
+        return 1;
+    }
+
+    /* Snapshot stream can also arrive asynchronously; drain it to keep framing aligned. */
+    if (hdr->type == RW_MSG_SNAPSHOT_BEGIN && hdr->payload_len == sizeof(rw_snapshot_begin_t)) {
+        rw_snapshot_begin_t begin;
+        (void)rw_recv_payload(fd, &begin, sizeof(begin));
+        log_info("SNAPSHOT_BEGIN: id=%u size=%ux%u", (unsigned)begin.snapshot_id,
+                 (unsigned)begin.size.width, (unsigned)begin.size.height);
+        return 1;
+    }
+
+    if (hdr->type == RW_MSG_SNAPSHOT_CHUNK) {
+        /* payload length varies; just drain */
+        if (hdr->payload_len > 0) {
+            drain_payload(fd, hdr->payload_len);
+        }
+        return 1;
+    }
+
+    if (hdr->type == RW_MSG_SNAPSHOT_END && hdr->payload_len == 0) {
+        log_info("SNAPSHOT_END");
+        return 1;
+    }
+
+    return 0;
+}
+
 static int recv_ack_or_error(int fd, uint16_t expected_req_type) {
-    rw_msg_hdr_t hdr;
-    if (rw_recv_hdr(fd, &hdr) != 0) {
-        log_error("Failed to receive server response header");
-        return -1;
-    }
+    while (1) {
+        rw_msg_hdr_t hdr;
+        if (rw_recv_hdr(fd, &hdr) != 0) {
+            log_error("Failed to receive server response header");
+            return -1;
+        }
 
-    if (hdr.type == RW_MSG_ACK && hdr.payload_len == sizeof(rw_ack_t)) {
-        rw_ack_t ack;
-        if (rw_recv_payload(fd, &ack, sizeof(ack)) != 0) {
-            return -1;
+        /* Skip/consume async notifications that can arrive anytime. */
+        if (consume_async_msg(fd, &hdr)) {
+            continue;
         }
-        if (ack.request_type != expected_req_type) {
-            log_error("ACK for unexpected request: got=%u expected=%u", (unsigned)ack.request_type, (unsigned)expected_req_type);
-            return -1;
-        }
-        if (ack.status != 0) {
-            log_error("Server returned non-zero status=%u for request=%u", (unsigned)ack.status, (unsigned)expected_req_type);
-            return -1;
-        }
-        return 0;
-    }
 
-    if (hdr.type == RW_MSG_ERROR && hdr.payload_len == sizeof(rw_error_t)) {
-        rw_error_t err;
-        if (rw_recv_payload(fd, &err, sizeof(err)) != 0) {
-            return -1;
-        }
-        err.error_msg[sizeof(err.error_msg) - 1] = '\0';
-        log_error("Server error (%u): %s", (unsigned)err.error_code, err.error_msg);
-        return -1;
-    }
-
-    /* Unexpected message; drain payload if any. */
-    if (hdr.payload_len > 0) {
-        char buf[256];
-        uint32_t left = hdr.payload_len;
-        while (left > 0) {
-            uint32_t n = left > sizeof(buf) ? (uint32_t)sizeof(buf) : left;
-            if (rw_recv_payload(fd, buf, n) != 0) {
-                break;
+        if (hdr.type == RW_MSG_ACK && hdr.payload_len == sizeof(rw_ack_t)) {
+            rw_ack_t ack;
+            if (rw_recv_payload(fd, &ack, sizeof(ack)) != 0) {
+                return -1;
             }
-            left -= n;
+            if (ack.request_type != expected_req_type) {
+                log_error("ACK for unexpected request: got=%u expected=%u", (unsigned)ack.request_type, (unsigned)expected_req_type);
+                return -1;
+            }
+            if (ack.status != 0) {
+                log_error("Server returned non-zero status=%u for request=%u", (unsigned)ack.status, (unsigned)expected_req_type);
+                return -1;
+            }
+            return 0;
         }
-    }
 
-    log_error("Unexpected response type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
-    return -1;
+        if (hdr.type == RW_MSG_ERROR && hdr.payload_len == sizeof(rw_error_t)) {
+            rw_error_t err;
+            if (rw_recv_payload(fd, &err, sizeof(err)) != 0) {
+                return -1;
+            }
+            err.error_msg[sizeof(err.error_msg) - 1] = '\0';
+            log_error("Server error (%u): %s", (unsigned)err.error_code, err.error_msg);
+            return -1;
+        }
+
+        /* Unexpected message; drain payload if any and treat as error. */
+        if (hdr.payload_len > 0) {
+            drain_payload(fd, hdr.payload_len);
+        }
+
+        log_error("Unexpected response type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
+        return -1;
+    }
 }
 
 int client_ipc_query_status(int fd, rw_status_t *out_status) {
@@ -185,18 +250,29 @@ int client_ipc_query_status(int fd, rw_status_t *out_status) {
         return -1;
     }
 
-    rw_msg_hdr_t hdr;
-    if (rw_recv_hdr(fd, &hdr) != 0) {
-        return -1;
+    while (1) {
+        rw_msg_hdr_t hdr;
+        if (rw_recv_hdr(fd, &hdr) != 0) {
+            return -1;
+        }
+
+        /* Async messages may race ahead of STATUS; consume and keep waiting. */
+        if (consume_async_msg(fd, &hdr)) {
+            continue;
+        }
+
+        if (hdr.type != RW_MSG_STATUS || hdr.payload_len != sizeof(rw_status_t)) {
+            log_error("Expected STATUS, got type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
+            if (hdr.payload_len > 0) {
+                drain_payload(fd, hdr.payload_len);
+            }
+            return -1;
+        }
+        if (rw_recv_payload(fd, out_status, sizeof(*out_status)) != 0) {
+            return -1;
+        }
+        return 0;
     }
-    if (hdr.type != RW_MSG_STATUS || hdr.payload_len != sizeof(rw_status_t)) {
-        log_error("Expected STATUS, got type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
-        return -1;
-    }
-    if (rw_recv_payload(fd, out_status, sizeof(*out_status)) != 0) {
-        return -1;
-    }
-    return 0;
 }
 
 int client_ipc_create_sim(int fd, const rw_create_sim_t *req) {

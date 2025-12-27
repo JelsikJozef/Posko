@@ -5,6 +5,7 @@
 #include "protocol.h"
 
 #include <errno.h>
+#include <sys/socket.h>
 #include <unistd.h>
 
 /**
@@ -139,6 +140,70 @@ int rw_recv_payload(int fd, void *buf, uint32_t len) {
     }
     if (rw_read_all(fd, buf, (size_t)len) != 0) {
         return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Write exactly @p len bytes to a file descriptor, non-blocking version.
+ *
+ * Handles partial writes and `EINTR`. Returns -1 on any permanent error.
+ *
+ * @param fd File descriptor.
+ * @param buf Bytes to write.
+ * @param len Number of bytes to write.
+ * @return 0 on success, -1 on error.
+ */
+static int rw_write_all_noblock(int fd, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    size_t sent = 0;
+
+    while (sent < len) {
+        ssize_t n = send(fd, p + sent, len - sent, MSG_DONTWAIT | MSG_NOSIGNAL);
+        if (n > 0) {
+            sent += (size_t)n;
+            continue;
+        }
+        if (n == 0) {
+            return -1;
+        }
+        if (errno == EINTR) {
+            continue;
+        }
+        /* Would block: treat as failure for best-effort send. */
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return -1;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+/**
+ * @brief Send a framed message (header + optional payload), non-blocking version.
+ *
+ * @param fd Connected socket.
+ * @param type Message type.
+ * @param payload Pointer to payload bytes (may be NULL only if @p payload_len is 0).
+ * @param payload_len Payload size in bytes.
+ * @return 0 on success, -1 on error.
+ */
+int rw_send_msg_noblock(int fd, rw_msg_type_t type, const void *payload, uint32_t payload_len) {
+    rw_msg_hdr_t hdr;
+    hdr.type = (uint8_t)type;
+    hdr.reserved = 0;
+    hdr.payload_len = payload_len;
+
+    if (rw_write_all_noblock(fd, &hdr, sizeof(hdr)) != 0) {
+        return -1;
+    }
+    if (payload_len > 0) {
+        if (payload == NULL) {
+            return -1;
+        }
+        if (rw_write_all_noblock(fd, payload, (size_t)payload_len) != 0) {
+            return -1;
+        }
     }
     return 0;
 }
