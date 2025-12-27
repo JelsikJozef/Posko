@@ -2,6 +2,11 @@
 // Created by Jozef Jelšík on 26/12/2025.
 //
 
+/**
+ * @file results.c
+ * @brief Implementation of per-tile statistics storage.
+ */
+
 #include "results.h"
 
 #include "../common/util.h"
@@ -43,6 +48,13 @@ int results_init(results_t *r, world_size_t size) {
 
 void results_destroy(results_t *r) {
     if (!r) return;
+
+    /* The mutex is initialized in results_init(); destroy it once on teardown.
+     * (If init failed before mutex initialization, destroying an uninitialized
+     * mutex would be UB, so results_init() only calls results_destroy() before
+     * pthread_mutex_init().)
+     */
+    (void)pthread_mutex_destroy(&r->mtx);
 
     free(r->trials);
     free(r->sum_steps);

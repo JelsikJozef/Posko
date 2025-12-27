@@ -2,6 +2,11 @@
 // Created by Jozef Jelšík on 26/12/2025.
 //
 
+/**
+ * @file world.c
+ * @brief Implementation of the world grid and obstacle helpers.
+ */
+
 #include "world.h"
 
 #include "../common/util.h"
@@ -9,7 +14,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* simple deterministic RNG to generate obstacles*/
+/* Simple deterministic RNG (LCG) to generate obstacles.
+ * Note: this is not cryptographically secure; it's only for reproducible maps.
+ */
 
 static uint32_t lcg_next(uint32_t *state) {
     *state = (*state * 1103515245u + 12345u) + 1013904223u;
@@ -104,6 +111,6 @@ void world_generate_obstacles(world_t *w, int percent, uint32_t seed) {
     }
 
     if (n > 0) {
-        w->obstacles[0] = 0; /*ensure origin is free*/
+        w->obstacles[0] = 0; /* Ensure origin (0,0) is always free. */
     }
 }
