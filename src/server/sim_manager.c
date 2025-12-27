@@ -19,7 +19,8 @@ typedef struct {
 
 static void send_progress_fn(int fd, void *user) {
     broadcast_progress_ctx_t *b = (broadcast_progress_ctx_t*)user;
-    rw_send_msg(fd, RW_MSG_PROGRESS, &b->msg, sizeof(b->msg));
+    /* Best-effort: never block the simulation thread on slow clients. */
+    (void)rw_send_msg_noblock(fd, RW_MSG_PROGRESS, &b->msg, sizeof(b->msg));
 }
 
 static void broadcast_progress(server_context_t *ctx,
@@ -39,6 +40,9 @@ static void *sim_thread_main(void *arg) {
 
     sm->running = 1;
     sm->stop_requested = 0;
+
+    server_context_set_sim_state(sm->ctx, RW_WIRE_SIM_RUNNING);
+    server_context_set_progress(sm->ctx, 0);
 
     if (worker_pool_init(&sm->pool,
                          sm->nthreads,
@@ -97,6 +101,13 @@ static void *sim_thread_main(void *arg) {
     worker_pool_destroy(&sm->pool);
 
     sm->running = 0;
+
+    server_context_set_sim_state(sm->ctx, RW_WIRE_SIM_FINISHED);
+
+    if (sm->on_end) {
+        sm->on_end(sm->on_end_user, sm->stop_requested ? 1 : 0);
+    }
+
     return NULL;
 }
 
@@ -123,6 +134,9 @@ int sim_manager_init(sim_manager_t *sm,
     sm->running = 0;
     sm->stop_requested = 0;
 
+    sm->on_end = NULL;
+    sm->on_end_user = NULL;
+
     return 0;
 }
 
@@ -146,8 +160,33 @@ int sim_manager_start(sim_manager_t *sm) {
     return 0;
 }
 
+void sim_manager_join(sim_manager_t *sm) {
+    if (!sm) return;
+    if (sm->running) {
+        pthread_join(sm->thread, NULL);
+        sm->running = 0;
+    }
+}
+
+void sim_manager_set_on_end(sim_manager_t *sm, sim_manager_on_end_fn fn, void *user) {
+    if (!sm) return;
+    sm->on_end = fn;
+    sm->on_end_user = user;
+}
+
+int sim_manager_restart(sim_manager_t *sm, uint32_t total_reps) {
+    if (!sm) return -1;
+    if (sm->running) return -1;
+    if (total_reps == 0) return -1;
+
+    sm->ctx->total_reps = total_reps;
+    server_context_set_progress(sm->ctx, 0);
+    server_context_set_sim_state(sm->ctx, RW_WIRE_SIM_LOBBY);
+
+    return sim_manager_start(sm);
+}
+
 void sim_manager_request_stop(sim_manager_t *sm) {
     if (!sm) return;
     sm->stop_requested = 1;
 }
-

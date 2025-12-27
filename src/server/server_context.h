@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include "../common/types.h"
+#include "../common/protocol.h"
 
 /**
  * @file server_context.h
@@ -54,12 +55,21 @@ typedef struct server_context{
 
     global_mode_t global_mode; /**< Current server mode (interactive/summary). */
 
+    /** Simulation lifecycle state. */
+    rw_wire_sim_state_t sim_state;
+
+    /** 0=single-user, 1=multi-user */
+    uint8_t multi_user;
+
+    /** Client fd that currently owns control (in single-user always the first joiner). */
+    int owner_fd;
+
     /* Clients */
     client_list_t clients;     /**< Connected client sockets. */
 
     /* Synchronization */
     pthread_mutex_t clients_mtx; /**< Protects @ref server_context_t::clients. */
-    pthread_mutex_t state_mtx;   /**< Protects @ref server_context_t::current_rep and @ref server_context_t::global_mode. */
+    pthread_mutex_t state_mtx;   /**< Protects mutable state and lifecycle fields. */
 
 } server_context_t;
 
@@ -148,6 +158,18 @@ void server_context_set_progress(server_context_t *ctx, uint32_t current_rep);
  * @return Current repetition index.
  */
 uint32_t server_context_get_progress(server_context_t *ctx);
+
+/* Lifecycle helpers */
+void server_context_set_sim_state(server_context_t *ctx, rw_wire_sim_state_t state);
+rw_wire_sim_state_t server_context_get_sim_state(server_context_t *ctx);
+
+void server_context_set_multi_user(server_context_t *ctx, uint8_t multi_user);
+uint8_t server_context_get_multi_user(server_context_t *ctx);
+
+void server_context_set_owner_fd(server_context_t *ctx, int owner_fd);
+int server_context_get_owner_fd(server_context_t *ctx);
+
+int server_context_client_can_control(server_context_t *ctx, int client_fd);
 
 #endif //SEMPRACA_SERVER_CONTEXT_H
 

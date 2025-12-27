@@ -10,7 +10,6 @@
 
 #include <signal.h>
 #include <unistd.h>
-#include <stdint.h>
 
 /* jednoduché ukončenie cez Ctrl+C */
 static volatile sig_atomic_t g_stop = 0;
@@ -79,11 +78,12 @@ int main(void) {
         die("sim_manager_init failed");
     }
 
-    if (sim_manager_start(&sm) != 0) {
-        die("sim_manager_start failed");
-    }
+    /* Provide handles for menu control-plane. */
+    server_ipc_set_sim_handles(&ctx, &world, &results, &sm);
 
-    log_info("Server running. Ctrl+C to stop.");
+    /* Do not auto-start; client menu will START_SIM when ready. */
+
+    log_info("Server running (lobby). Ctrl+C to stop.");
 
     /* ===== 6) main loop ===== */
     while (!g_stop) {

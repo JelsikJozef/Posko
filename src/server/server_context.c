@@ -39,6 +39,10 @@ void server_context_init(server_context_t *ctx) {
     ctx->current_rep = 0;
     ctx->global_mode = MODE_SUMMARY;
 
+    ctx->sim_state = RW_WIRE_SIM_LOBBY;
+    ctx->multi_user = 0;
+    ctx->owner_fd = -1;
+
     ctx->clients.count = 0;
     for (int i = 0; i < SERVER_MAX_CLIENTS; i++) {
         ctx->clients.fds[i] = -1;
@@ -195,3 +199,60 @@ uint32_t server_context_get_progress(server_context_t *ctx) {
     return rep;
 }
 
+rw_wire_sim_state_t server_context_get_sim_state(server_context_t *ctx) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    rw_wire_sim_state_t s = ctx->sim_state;
+    pthread_mutex_unlock(&ctx->state_mtx);
+    return s;
+}
+
+void server_context_set_sim_state(server_context_t *ctx, rw_wire_sim_state_t state) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    ctx->sim_state = state;
+    pthread_mutex_unlock(&ctx->state_mtx);
+}
+
+void server_context_set_multi_user(server_context_t *ctx, uint8_t multi_user) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    ctx->multi_user = multi_user ? 1 : 0;
+    pthread_mutex_unlock(&ctx->state_mtx);
+}
+
+uint8_t server_context_get_multi_user(server_context_t *ctx) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    uint8_t v = ctx->multi_user;
+    pthread_mutex_unlock(&ctx->state_mtx);
+    return v;
+}
+
+void server_context_set_owner_fd(server_context_t *ctx, int owner_fd) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    ctx->owner_fd = owner_fd;
+    pthread_mutex_unlock(&ctx->state_mtx);
+}
+
+int server_context_get_owner_fd(server_context_t *ctx) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    int v = ctx->owner_fd;
+    pthread_mutex_unlock(&ctx->state_mtx);
+    return v;
+}
+
+int server_context_client_can_control(server_context_t *ctx, int client_fd) {
+    pthread_mutex_lock(&ctx->state_mtx);
+    int owner = ctx->owner_fd;
+    uint8_t mu = ctx->multi_user;
+    pthread_mutex_unlock(&ctx->state_mtx);
+
+    if (owner < 0) {
+        /* If not set yet, allow first client to become owner logically. */
+        return 1;
+    }
+
+    if (!mu) {
+        return client_fd == owner;
+    }
+
+    /* In multi-user, still limit control to owner for simplicity/determinism. */
+    return client_fd == owner;
+}
