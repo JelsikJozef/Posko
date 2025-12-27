@@ -7,22 +7,16 @@
 
 /**
  * @file ui_menu.h
- * @brief Simple client-side menu UI helpers.
+ * @brief Console menu for client (C9/C10).
+ */
+
+/**
+ * @brief Run interactive menu.
  *
- * NOTE: This module is currently a stub.
+ * Connects to the server socket, performs JOIN, and then provides a console
+ * menu to create/join/restart/save/quit.
  */
-
-/**
- * @brief Print the menu to the terminal.
- * @return Nothing.
- */
-void menu_show(void);
-
-/**
- * @brief Read and handle a single user menu command.
- * @return Nothing.
- */
-void menu_handle_input(void);
+int ui_menu_run(const char *socket_path);
 
 #endif //SEMPRACA_UI_MENU_H
 

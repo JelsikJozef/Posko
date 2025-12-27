@@ -34,6 +34,13 @@
 #define RW_SNAPSHOT_CHUNK_MAX 4096u
 
 /**
+ * @brief Maximum length (including NUL) for file path strings sent over the wire.
+ *
+ * Kept small and fixed-size to avoid dynamic allocations and simplify parsing.
+ */
+#define RW_PATH_MAX 256u
+
+/**
  * @brief Supported message types in the IPC protocol.
  */
 typedef enum {
@@ -51,6 +58,24 @@ typedef enum {
 
     RW_MSG_STOP_SIM = 9,  /**< Client -> Server: stop simulation request. */
     RW_MSG_END = 10,      /**< Server -> Clients: simulation ended notification. */
+
+    /* ===== Control-plane for interactive menu ===== */
+    RW_MSG_QUERY_STATUS = 11,     /**< Client -> Server: request current status/state. */
+    RW_MSG_STATUS = 12,           /**< Server -> Client: status response. */
+
+    RW_MSG_CREATE_SIM = 13,       /**< Client -> Server: create a new simulation (in lobby). */
+    RW_MSG_LOAD_WORLD = 14,       /**< Client -> Server: load world from file (in lobby). */
+    RW_MSG_START_SIM = 15,        /**< Client -> Server: start simulation (from lobby). */
+
+    RW_MSG_REQUEST_SNAPSHOT = 16, /**< Client -> Server: request a snapshot stream. */
+
+    RW_MSG_RESTART_SIM = 17,      /**< Client -> Server: restart using existing world/config + new reps. */
+    RW_MSG_LOAD_RESULTS = 18,     /**< Client -> Server: load results from file. */
+    RW_MSG_SAVE_RESULTS = 19,     /**< Client -> Server: save results to file. */
+
+    RW_MSG_QUIT = 20,             /**< Client -> Server: graceful disconnect / optional stop. */
+
+    RW_MSG_ACK = 21,              /**< Server -> Client: generic ACK for a request. */
 
     RW_MSG_ERROR = 255    /**< Server -> Client: error message. */
 } rw_msg_type_t;
@@ -200,6 +225,114 @@ typedef struct {
     uint32_t data_len;     /**< Valid data length in @ref data. */
     uint8_t data[RW_SNAPSHOT_CHUNK_MAX];
 } rw_snapshot_chunk_t;
+#pragma pack(pop)
+
+/**
+ * @brief Wire representation of the server simulation state.
+ */
+typedef enum {
+    RW_WIRE_SIM_LOBBY = 1,    /**< Configurable, not running. */
+    RW_WIRE_SIM_RUNNING = 2,  /**< Running replications. */
+    RW_WIRE_SIM_FINISHED = 3  /**< Completed (or stopped). */
+} rw_wire_sim_state_t;
+
+#pragma pack(push, 1)
+/**
+ * @brief Payload of a QUERY_STATUS request.
+ */
+typedef struct {
+    uint32_t pid;
+} rw_query_status_t;
+
+/**
+ * @brief Payload of a STATUS response.
+ */
+typedef struct {
+    rw_wire_sim_state_t state;
+
+    uint8_t multi_user;   /**< 0=single-user, 1=multi-user */
+    uint8_t can_control;  /**< 1 if the server considers this client allowed to control */
+    uint16_t reserved;
+
+    rw_wire_world_kinds_t world_kind;
+    rw_wire_size_t size;
+
+    rw_wire_move_probs_t probs;
+    uint32_t k_max_steps;
+    uint32_t total_reps;
+    uint32_t current_rep;
+
+    rw_wire_global_mode_t global_mode;
+} rw_status_t;
+
+/**
+ * @brief Payload for CREATE_SIM.
+ */
+typedef struct {
+    rw_wire_world_kinds_t world_kind;
+    rw_wire_size_t size;
+
+    rw_wire_move_probs_t probs;
+    uint32_t k_max_steps;
+    uint32_t total_reps;
+
+    uint8_t multi_user; /**< 0=single-user, 1=multi-user */
+    uint8_t reserved8[3];
+} rw_create_sim_t;
+
+/**
+ * @brief Payload for LOAD_WORLD.
+ */
+typedef struct {
+    char path[RW_PATH_MAX];
+    uint8_t multi_user; /**< 0=single-user, 1=multi-user */
+    uint8_t reserved8[3];
+} rw_load_world_t;
+
+/**
+ * @brief Payload for RESTART_SIM.
+ */
+typedef struct {
+    uint32_t total_reps;
+} rw_restart_sim_t;
+
+/**
+ * @brief Payload for LOAD_RESULTS.
+ */
+typedef struct {
+    char path[RW_PATH_MAX];
+} rw_load_results_t;
+
+/**
+ * @brief Payload for SAVE_RESULTS.
+ */
+typedef struct {
+    char path[RW_PATH_MAX];
+} rw_save_results_t;
+
+/**
+ * @brief Payload for REQUEST_SNAPSHOT.
+ */
+typedef struct {
+    uint32_t pid;
+} rw_request_snapshot_t;
+
+/**
+ * @brief Payload for QUIT.
+ */
+typedef struct {
+    uint32_t pid;
+    uint8_t stop_if_owner; /**< if 1 and client is owner, server stops running sim */
+    uint8_t reserved8[3];
+} rw_quit_t;
+
+/**
+ * @brief Payload of an ACK message.
+ */
+typedef struct {
+    uint16_t request_type; /**< original request type being acknowledged */
+    uint16_t status;       /**< 0=ok, nonzero=error */
+} rw_ack_t;
 #pragma pack(pop)
 
 /**

@@ -25,6 +25,8 @@
 #include <pthread.h>
 #include <stdint.h>
 
+typedef void (*sim_manager_on_end_fn)(void *user, int stopped);
+
 typedef struct {
     /** Shared server context (configuration + progress). */
     server_context_t *ctx;
@@ -52,6 +54,10 @@ typedef struct {
 
     /** Non-zero when a stop was requested. */
     int stop_requested;
+
+    /** Optional callback invoked when the simulation thread finishes. */
+    sim_manager_on_end_fn on_end;
+    void *on_end_user;
 } sim_manager_t;
 
 /**
@@ -92,6 +98,21 @@ void sim_manager_destroy(sim_manager_t *sm);
  * @return 0 on success, -1 on failure.
  */
 int sim_manager_start(sim_manager_t *sm);
+
+/**
+ * @brief Join (wait for) the simulation thread if running.
+ */
+void sim_manager_join(sim_manager_t *sm);
+
+/**
+ * @brief Set an optional end callback.
+ */
+void sim_manager_set_on_end(sim_manager_t *sm, sim_manager_on_end_fn fn, void *user);
+
+/**
+ * @brief Restart the simulation with a new total_reps (clears results).
+ */
+int sim_manager_restart(sim_manager_t *sm, uint32_t total_reps);
 
 /**
  * @brief Request the currently running simulation to stop.

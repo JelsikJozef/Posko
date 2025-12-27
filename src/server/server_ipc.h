@@ -6,6 +6,10 @@
 #define SEMPRACA_SERVER_IPC_H
 
 #include <pthread.h>
+#include "server_context.h"
+#include "world.h"
+#include "results.h"
+#include "sim_manager.h"
 
 /**
  * @file server_ipc.h
@@ -37,6 +41,11 @@ struct server_context;
  * @return 0 on success, -1 on invalid arguments, program terminates on fatal socket errors.
  */
 int server_ipc_start(const char *socket_path, struct server_context *ctx);
+
+/**
+ * @brief Provide server-wide simulation handles needed by control-plane IPC.
+ */
+void server_ipc_set_sim_handles(server_context_t *ctx, world_t *world, results_t *results, sim_manager_t *sm);
 
 /**
  * @brief Stop the server IPC subsystem.
