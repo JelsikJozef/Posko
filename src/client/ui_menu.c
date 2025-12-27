@@ -5,6 +5,7 @@
 #include "ui_menu.h"
 
 #include "client_ipc.h"
+#include "client_dispatcher.h"
 #include "snapshot_reciever.h"
 #include "../common/util.h"
 #include "../common/protocol.h"
@@ -12,18 +13,20 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <sys/select.h>
 
-static void drain_payload(int fd, uint32_t len) {
-    char buf[256];
-    uint32_t left = len;
-    while (left > 0) {
-        uint32_t n = left > sizeof(buf) ? (uint32_t)sizeof(buf) : left;
-        if (rw_recv_payload(fd, buf, n) != 0) {
-            break;
-        }
-        left -= n;
-    }
+static void print_status_summary(const rw_status_t *st) {
+    const char *state = "?";
+    if (st->state == RW_WIRE_SIM_LOBBY) state = "LOBBY";
+    else if (st->state == RW_WIRE_SIM_RUNNING) state = "RUNNING";
+    else if (st->state == RW_WIRE_SIM_FINISHED) state = "FINISHED";
+
+    printf("\n[STATUS] state=%s multi_user=%u can_control=%u\n", state, st->multi_user, st->can_control);
+    printf("         world=%u size=%ux%u K=%u reps=%u progress=%u\n\n",
+           (unsigned)st->world_kind,
+           (unsigned)st->size.width, (unsigned)st->size.height,
+           (unsigned)st->k_max_steps,
+           (unsigned)st->total_reps,
+           (unsigned)st->current_rep);
 }
 
 static int read_line(char *buf, size_t cap) {
@@ -85,77 +88,6 @@ static int prompt_yes_no(const char *label, int *out_yes) {
         }
         printf("Please enter y or n.\n");
     }
-}
-
-static void handle_server_message(int fd) {
-    rw_msg_hdr_t hdr;
-    if (rw_recv_hdr(fd, &hdr) != 0) {
-        die("Server disconnected");
-    }
-
-    if (hdr.type == RW_MSG_GLOBAL_MODE_CHANGED && hdr.payload_len == sizeof(rw_global_mode_changed_t)) {
-        rw_global_mode_changed_t msg;
-        rw_recv_payload(fd, &msg, sizeof(msg));
-        log_info("GLOBAL_MODE_CHANGED: new_mode=%u", (unsigned)msg.new_mode);
-        return;
-    }
-
-    if (hdr.type == RW_MSG_PROGRESS && hdr.payload_len == sizeof(rw_progress_t)) {
-        rw_progress_t p;
-        rw_recv_payload(fd, &p, sizeof(p));
-        log_info("PROGRESS: %u/%u", p.current_rep, p.total_reps);
-        return;
-    }
-
-    if (hdr.type == RW_MSG_END && hdr.payload_len == sizeof(rw_end_t)) {
-        rw_end_t e;
-        rw_recv_payload(fd, &e, sizeof(e));
-        log_info("END: reason=%u", (unsigned)e.reason);
-        return;
-    }
-
-    if (hdr.type == RW_MSG_SNAPSHOT_BEGIN && hdr.payload_len == sizeof(rw_snapshot_begin_t)) {
-        rw_snapshot_begin_t begin;
-        rw_recv_payload(fd, &begin, sizeof(begin));
-        client_snapshot_begin(&begin);
-        return;
-    }
-
-    if (hdr.type == RW_MSG_SNAPSHOT_CHUNK && hdr.payload_len >= sizeof(rw_snapshot_chunk_t) - RW_SNAPSHOT_CHUNK_MAX) {
-        rw_snapshot_chunk_t chunk;
-        if (hdr.payload_len > sizeof(chunk)) {
-            die("Invalid SNAPSHOT_CHUNK payload length");
-        }
-        memset(&chunk, 0, sizeof(chunk));
-        rw_recv_payload(fd, &chunk, hdr.payload_len);
-        client_snapshot_chunk(&chunk);
-        return;
-    }
-
-    if (hdr.type == RW_MSG_SNAPSHOT_END && hdr.payload_len == 0) {
-        client_snapshot_end();
-        return;
-    }
-
-    /* Ignore other messages (ACK/ERROR are read in request/response paths). */
-    if (hdr.payload_len > 0) {
-        drain_payload(fd, hdr.payload_len);
-    }
-}
-
-static void print_status_summary(const rw_status_t *st) {
-    const char *state = "?";
-    if (st->state == RW_WIRE_SIM_LOBBY) state = "LOBBY";
-    else if (st->state == RW_WIRE_SIM_RUNNING) state = "RUNNING";
-    else if (st->state == RW_WIRE_SIM_FINISHED) state = "FINISHED";
-
-    printf("\n[STATUS] state=%s multi_user=%u can_control=%u\n", state, st->multi_user, st->can_control);
-    printf("         world=%u size=%ux%u K=%u reps=%u progress=%u\n\n",
-           (unsigned)st->world_kind,
-           (unsigned)st->size.width, (unsigned)st->size.height,
-           (unsigned)st->k_max_steps,
-           (unsigned)st->total_reps,
-           (unsigned)st->current_rep);
 }
 
 static int menu_new_sim(int fd) {
@@ -237,52 +169,11 @@ static int menu_restart_finished(int fd) {
         return -1;
     }
 
-    printf("Simulation restarted. Waiting for END... (you can also request snapshot)\n");
+    printf("Simulation restarted. Waiting for END... (END will be printed asynchronously)\n");
 
-    /* Simple wait loop: run until END arrives; still handle progress/snapshot. */
-    while (1) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
-        int r = select(fd + 1, &rfds, NULL, NULL, NULL);
-        if (r < 0) {
-            die("select() failed");
-        }
-        if (FD_ISSET(fd, &rfds)) {
-            rw_msg_hdr_t hdr;
-            if (rw_recv_hdr(fd, &hdr) != 0) {
-                return -1;
-            }
-            if (hdr.type == RW_MSG_END && hdr.payload_len == sizeof(rw_end_t)) {
-                rw_end_t e;
-                rw_recv_payload(fd, &e, sizeof(e));
-                log_info("END received");
-                break;
-            }
-            /* otherwise dispatch */
-            if (hdr.type == RW_MSG_PROGRESS && hdr.payload_len == sizeof(rw_progress_t)) {
-                rw_progress_t p;
-                rw_recv_payload(fd, &p, sizeof(p));
-                log_info("PROGRESS: %u/%u", p.current_rep, p.total_reps);
-            } else if (hdr.type == RW_MSG_SNAPSHOT_BEGIN && hdr.payload_len == sizeof(rw_snapshot_begin_t)) {
-                rw_snapshot_begin_t begin;
-                rw_recv_payload(fd, &begin, sizeof(begin));
-                client_snapshot_begin(&begin);
-            } else if (hdr.type == RW_MSG_SNAPSHOT_CHUNK && hdr.payload_len >= sizeof(rw_snapshot_chunk_t) - RW_SNAPSHOT_CHUNK_MAX) {
-                rw_snapshot_chunk_t chunk;
-                if (hdr.payload_len > sizeof(chunk)) {
-                    die("Invalid SNAPSHOT_CHUNK payload length");
-                }
-                memset(&chunk, 0, sizeof(chunk));
-                rw_recv_payload(fd, &chunk, hdr.payload_len);
-                client_snapshot_chunk(&chunk);
-            } else if (hdr.type == RW_MSG_SNAPSHOT_END && hdr.payload_len == 0) {
-                client_snapshot_end();
-            } else {
-                drain_payload(fd, hdr.payload_len);
-            }
-        }
-    }
+    /* v1: do not block on reading END here (dispatcher is the only reader).
+     * The dispatcher will print END when it arrives.
+     */
 
     if (client_ipc_save_results(fd, save_path) != 0) {
         return -1;
@@ -300,6 +191,7 @@ int ui_menu_run(const char *socket_path) {
         die("Failed to connect to server");
     }
 
+    /* Handshake BEFORE dispatcher: JOIN + blocking WELCOME receive. */
     if (client_ipc_send_join(fd) != 0) {
         die("Failed to send JOIN");
     }
@@ -311,20 +203,12 @@ int ui_menu_run(const char *socket_path) {
 
     log_info("Connected. WELCOME: size=%ux%u reps=%u K=%u", welcome.size.width, welcome.size.height, welcome.total_reps, welcome.k_max_steps);
 
+    /* Start single-reader dispatcher AFTER handshake. */
+    if (dispatcher_start(fd) != 0) {
+        die("Failed to start dispatcher");
+    }
+
     while (1) {
-        /* Drain any pending server messages without blocking too long. */
-        struct timeval tv;
-        tv.tv_sec = 0;
-        tv.tv_usec = 0;
-
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        FD_SET(fd, &rfds);
-        int r = select(fd + 1, &rfds, NULL, NULL, &tv);
-        if (r > 0 && FD_ISSET(fd, &rfds)) {
-            handle_server_message(fd);
-        }
-
         rw_status_t st;
         if (client_ipc_query_status(fd, &st) != 0) {
             die("Failed to query status");
@@ -355,7 +239,7 @@ int ui_menu_run(const char *socket_path) {
                 log_error("Failed to create/load simulation");
             }
         } else if (choice == 2) {
-            log_info("Joined. Waiting for progress/end... (this client can request snapshot)");
+            log_info("Joined. Waiting for progress/end... (async messages printed by dispatcher)");
         } else if (choice == 3) {
             if (menu_restart_finished(fd) != 0) {
                 log_error("Restart failed");
@@ -363,6 +247,8 @@ int ui_menu_run(const char *socket_path) {
         } else if (choice == 4) {
             if (client_ipc_request_snapshot(fd) != 0) {
                 log_error("Snapshot request failed");
+            } else {
+                log_info("Snapshot requested. Waiting for snapshot stream...");
             }
         } else if (choice == 5) {
             if (client_ipc_start_sim(fd) != 0) {
@@ -386,7 +272,8 @@ int ui_menu_run(const char *socket_path) {
             if (isatty(STDIN_FILENO)) {
                 (void)prompt_yes_no("Stop simulation if you are owner?", &stop);
             }
-            client_ipc_quit(fd, stop);
+            (void)client_ipc_quit(fd, stop);
+            dispatcher_stop();
             close(fd);
             return 0;
         } else {
@@ -394,7 +281,8 @@ int ui_menu_run(const char *socket_path) {
         }
     }
 
-    client_ipc_quit(fd, 0);
+    (void)client_ipc_quit(fd, 0);
+    dispatcher_stop();
     close(fd);
     return 0;
 }

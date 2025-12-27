@@ -3,6 +3,7 @@
 //
 
 #include "client_ipc.h"
+#include "client_dispatcher.h"
 
 #include "../common/util.h"
 #include "../common/protocol.h"
@@ -81,6 +82,7 @@ int client_ipc_send_join(int fd) {
  * @return 0 on success, -1 on protocol/IO error.
  */
 int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
+    // Handshake happens before dispatcher_start(); safe to read directly here.
     if (!out_welcome) {
         return -1;
     }
@@ -107,138 +109,8 @@ int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
     return 0;
 }
 
-/**
- * @brief Send a SET_GLOBAL_MODE request.
- *
- * @param fd Connected client socket.
- * @param mode New global mode in wire format.
- * @return 0 on success, -1 on failure.
- */
-int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
-    rw_set_global_mode_t msg;
-    msg.new_mode = mode;
-
-    if (rw_send_msg(fd, RW_MSG_SET_GLOBAL_MODE, &msg, sizeof(msg)) != 0) {
-        log_error("Failed to send SET_GLOBAL_MODE message to server");
-        return -1;
-    }
-    return 0;
-}
-
-static void drain_payload(int fd, uint32_t len) {
-    char buf[256];
-    uint32_t left = len;
-    while (left > 0) {
-        uint32_t n = left > sizeof(buf) ? (uint32_t)sizeof(buf) : left;
-        if (rw_recv_payload(fd, buf, n) != 0) {
-            break;
-        }
-        left -= n;
-    }
-}
-
-/*
- * Consume and optionally log asynchronous server notifications that may arrive
- * between request/response messages (e.g., PROGRESS while we're waiting for ACK).
- * Returns 1 if the message was handled/consumed, 0 if caller should handle it.
- */
-static int consume_async_msg(int fd, const rw_msg_hdr_t *hdr) {
-    if (!hdr) return 0;
-
-    if (hdr->type == RW_MSG_PROGRESS && hdr->payload_len == sizeof(rw_progress_t)) {
-        rw_progress_t p;
-        (void)rw_recv_payload(fd, &p, sizeof(p));
-        log_info("PROGRESS: %u/%u", p.current_rep, p.total_reps);
-        return 1;
-    }
-
-    if (hdr->type == RW_MSG_END && hdr->payload_len == sizeof(rw_end_t)) {
-        rw_end_t e;
-        (void)rw_recv_payload(fd, &e, sizeof(e));
-        log_info("END: reason=%u", (unsigned)e.reason);
-        return 1;
-    }
-
-    if (hdr->type == RW_MSG_GLOBAL_MODE_CHANGED && hdr->payload_len == sizeof(rw_global_mode_changed_t)) {
-        rw_global_mode_changed_t m;
-        (void)rw_recv_payload(fd, &m, sizeof(m));
-        log_info("GLOBAL_MODE_CHANGED: new_mode=%u", (unsigned)m.new_mode);
-        return 1;
-    }
-
-    /* Snapshot stream can also arrive asynchronously; drain it to keep framing aligned. */
-    if (hdr->type == RW_MSG_SNAPSHOT_BEGIN && hdr->payload_len == sizeof(rw_snapshot_begin_t)) {
-        rw_snapshot_begin_t begin;
-        (void)rw_recv_payload(fd, &begin, sizeof(begin));
-        log_info("SNAPSHOT_BEGIN: id=%u size=%ux%u", (unsigned)begin.snapshot_id,
-                 (unsigned)begin.size.width, (unsigned)begin.size.height);
-        return 1;
-    }
-
-    if (hdr->type == RW_MSG_SNAPSHOT_CHUNK) {
-        /* payload length varies; just drain */
-        if (hdr->payload_len > 0) {
-            drain_payload(fd, hdr->payload_len);
-        }
-        return 1;
-    }
-
-    if (hdr->type == RW_MSG_SNAPSHOT_END && hdr->payload_len == 0) {
-        log_info("SNAPSHOT_END");
-        return 1;
-    }
-
-    return 0;
-}
-
-static int recv_ack_or_error(int fd, uint16_t expected_req_type) {
-    while (1) {
-        rw_msg_hdr_t hdr;
-        if (rw_recv_hdr(fd, &hdr) != 0) {
-            log_error("Failed to receive server response header");
-            return -1;
-        }
-
-        /* Skip/consume async notifications that can arrive anytime. */
-        if (consume_async_msg(fd, &hdr)) {
-            continue;
-        }
-
-        if (hdr.type == RW_MSG_ACK && hdr.payload_len == sizeof(rw_ack_t)) {
-            rw_ack_t ack;
-            if (rw_recv_payload(fd, &ack, sizeof(ack)) != 0) {
-                return -1;
-            }
-            if (ack.request_type != expected_req_type) {
-                log_error("ACK for unexpected request: got=%u expected=%u", (unsigned)ack.request_type, (unsigned)expected_req_type);
-                return -1;
-            }
-            if (ack.status != 0) {
-                log_error("Server returned non-zero status=%u for request=%u", (unsigned)ack.status, (unsigned)expected_req_type);
-                return -1;
-            }
-            return 0;
-        }
-
-        if (hdr.type == RW_MSG_ERROR && hdr.payload_len == sizeof(rw_error_t)) {
-            rw_error_t err;
-            if (rw_recv_payload(fd, &err, sizeof(err)) != 0) {
-                return -1;
-            }
-            err.error_msg[sizeof(err.error_msg) - 1] = '\0';
-            log_error("Server error (%u): %s", (unsigned)err.error_code, err.error_msg);
-            return -1;
-        }
-
-        /* Unexpected message; drain payload if any and treat as error. */
-        if (hdr.payload_len > 0) {
-            drain_payload(fd, hdr.payload_len);
-        }
-
-        log_error("Unexpected response type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
-        return -1;
-    }
-}
+// Remove old multi-reader helpers: drain_payload/consume_async_msg/recv_ack_or_error.
+// All socket reads after handshake are handled by client_dispatcher.c.
 
 int client_ipc_query_status(int fd, rw_status_t *out_status) {
     if (!out_status) return -1;
@@ -246,76 +118,181 @@ int client_ipc_query_status(int fd, rw_status_t *out_status) {
     rw_query_status_t q;
     q.pid = (uint32_t)getpid();
 
-    if (rw_send_msg(fd, RW_MSG_QUERY_STATUS, &q, sizeof(q)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_STATUS, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_QUERY_STATUS, &q, sizeof(q),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
 
-    while (1) {
-        rw_msg_hdr_t hdr;
-        if (rw_recv_hdr(fd, &hdr) != 0) {
-            return -1;
-        }
-
-        /* Async messages may race ahead of STATUS; consume and keep waiting. */
-        if (consume_async_msg(fd, &hdr)) {
-            continue;
-        }
-
-        if (hdr.type != RW_MSG_STATUS || hdr.payload_len != sizeof(rw_status_t)) {
-            log_error("Expected STATUS, got type=%u len=%u", (unsigned)hdr.type, (unsigned)hdr.payload_len);
-            if (hdr.payload_len > 0) {
-                drain_payload(fd, hdr.payload_len);
-            }
-            return -1;
-        }
-        if (rw_recv_payload(fd, out_status, sizeof(*out_status)) != 0) {
-            return -1;
-        }
-        return 0;
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
     }
+
+    if (rh.type != RW_MSG_STATUS || rh.payload_len != sizeof(rw_status_t)) {
+        free(resp);
+        return -1;
+    }
+
+    memcpy(out_status, resp, sizeof(*out_status));
+    free(resp);
+    return 0;
 }
 
 int client_ipc_create_sim(int fd, const rw_create_sim_t *req) {
     if (!req) return -1;
-    if (rw_send_msg(fd, RW_MSG_CREATE_SIM, req, sizeof(*req)) != 0) {
+
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_CREATE_SIM, req, sizeof(*req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_CREATE_SIM);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_CREATE_SIM && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_load_world(int fd, const rw_load_world_t *req) {
     if (!req) return -1;
-    if (rw_send_msg(fd, RW_MSG_LOAD_WORLD, req, sizeof(*req)) != 0) {
+
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_LOAD_WORLD, req, sizeof(*req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_LOAD_WORLD);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_LOAD_WORLD && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_start_sim(int fd) {
-    if (rw_send_msg(fd, RW_MSG_START_SIM, NULL, 0) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_START_SIM, NULL, 0,
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_START_SIM);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_START_SIM && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_restart_sim(int fd, uint32_t total_reps) {
     rw_restart_sim_t req;
     req.total_reps = total_reps;
 
-    if (rw_send_msg(fd, RW_MSG_RESTART_SIM, &req, sizeof(req)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_RESTART_SIM, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_RESTART_SIM);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_RESTART_SIM && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_request_snapshot(int fd) {
     rw_request_snapshot_t req;
     req.pid = (uint32_t)getpid();
 
-    if (rw_send_msg(fd, RW_MSG_REQUEST_SNAPSHOT, &req, sizeof(req)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_REQUEST_SNAPSHOT, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_REQUEST_SNAPSHOT);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_REQUEST_SNAPSHOT && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_save_results(int fd, const char *path) {
@@ -324,10 +301,31 @@ int client_ipc_save_results(int fd, const char *path) {
     memset(&req, 0, sizeof(req));
     snprintf(req.path, sizeof(req.path), "%s", path);
 
-    if (rw_send_msg(fd, RW_MSG_SAVE_RESULTS, &req, sizeof(req)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_SAVE_RESULTS, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_SAVE_RESULTS);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_SAVE_RESULTS && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_load_results(int fd, const char *path) {
@@ -336,10 +334,31 @@ int client_ipc_load_results(int fd, const char *path) {
     memset(&req, 0, sizeof(req));
     snprintf(req.path, sizeof(req.path), "%s", path);
 
-    if (rw_send_msg(fd, RW_MSG_LOAD_RESULTS, &req, sizeof(req)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_LOAD_RESULTS, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_LOAD_RESULTS);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_LOAD_RESULTS && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }
 
 int client_ipc_quit(int fd, int stop_if_owner) {
@@ -348,9 +367,15 @@ int client_ipc_quit(int fd, int stop_if_owner) {
     q.stop_if_owner = stop_if_owner ? 1 : 0;
     q.reserved8[0] = q.reserved8[1] = q.reserved8[2] = 0;
 
-    (void)rw_send_msg(fd, RW_MSG_QUIT, &q, sizeof(q));
-    /* Best-effort; expect ACK but tolerate connection close. */
-    (void)recv_ack_or_error(fd, RW_MSG_QUIT);
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    /* Best-effort: if server closes early, treat as success. */
+    if (dispatcher_send_and_wait(fd, RW_MSG_QUIT, &q, sizeof(q),
+                                 expected, 2, 1000, &rh, &resp) == 0) {
+        free(resp);
+    }
     return 0;
 }
 
@@ -358,8 +383,29 @@ int client_ipc_stop_sim(int fd) {
     rw_stop_sim_t req;
     req.pid = (uint32_t)getpid();
 
-    if (rw_send_msg(fd, RW_MSG_STOP_SIM, &req, sizeof(req)) != 0) {
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_STOP_SIM, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
         return -1;
     }
-    return recv_ack_or_error(fd, RW_MSG_STOP_SIM);
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_STOP_SIM && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
 }

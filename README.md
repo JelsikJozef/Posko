@@ -127,13 +127,19 @@ Poznámka: momentálne server generuje prekážky deterministicky (seed + percen
 ### 2) Join existing simulation
 
 - Klient už je pripojený, takže je to prakticky „no-op“ položka.
-- Používa sa ako logická možnosť: zostať pripojený a sledovať `PROGRESS` / `END`.
+- Používa sa ako logická možnosť: zostať pripojený a sledovať stav simulácie.
+- Poznámka: aby sa nerozbíjalo interaktívne menu, klient **nevypisuje** priebežné
+  `PROGRESS`/`END` notifikácie do konzoly. Priebeh vieš sledovať cez `STATUS`
+  (pole `progress=current_rep`) alebo v logoch servera.
 
 ### 5) Start simulation
 
 - Použi, keď je server v stave `LOBBY`.
 - Klient pošle `START_SIM`.
-- Server začne počítať replikácie a posiela `PROGRESS`.
+- Server začne počítať replikácie.
+  - Server loguje `Replication X/Y completed`.
+  - Server môže posielať `PROGRESS` notifikácie, ale klient ich v menu režime
+    len konzumuje (kvôli stabilite promptu).
 
 ### 4) Request snapshot
 
@@ -350,10 +356,14 @@ Každá správa má hlavičku `rw_msg_hdr_t` a následne payload s dĺžkou `pay
 #### `RW_MSG_PROGRESS` (server → client)
 - Payload: `rw_progress_t`
 - Účel: informácia o priebehu: `current_rep/total_reps`.
+- Poznámka: klient v menu režime tieto správy neprintuje (aby sa nerozbíjal
+  prompt), ale stále ich musí čítať.
 
 #### `RW_MSG_END` (server → client)
 - Payload: `rw_end_t` (reason)
 - Účel: signalizuje koniec simulácie (normálny koniec alebo stop).
+- Poznámka: klient v menu režime tieto správy neprintuje (aby sa nerozbíjal
+  prompt).
 
 #### Snapshot stream
 
@@ -476,8 +486,10 @@ Očakávané:
    - p_left: `0.25`
    - p_right: `0.25`
 2. Klient: `5) Start simulation`
-3. Počas behu uvidíš `PROGRESS` logy.
-4. Po `END`: `6) Save results`
+3. Počas behu sleduj priebeh buď:
+   - na serveri (`Replication X/Y completed`), alebo
+   - v klientovi cez pravidelne vypisovaný `STATUS` (`progress=current_rep`).
+4. Po konci: `6) Save results`
    - path: napr. `out.rwres`
 
 ### 4) Kompletný scenár: restart z výsledku
