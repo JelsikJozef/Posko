@@ -194,3 +194,4 @@ uint32_t server_context_get_progress(server_context_t *ctx) {
     pthread_mutex_unlock(&ctx->state_mtx);
     return rep;
 }
+

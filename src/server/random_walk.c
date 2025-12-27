@@ -6,9 +6,7 @@
 
 #include "../common/util.h"
 
-#include <errno.h>
 #include <string.h>
-#include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -23,30 +21,44 @@ static uint32_t mix_u32(uint32_t x) {
     return x;
 }
 
+/* splitmix64: simple, fast 64-bit generator suitable for per-thread simulation RNG */
+static uint64_t splitmix64_next(uint64_t *state) {
+    uint64_t z = (*state += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
 void rw_rng_init_time_seed(rw_rng_t *rng) {
     if (!rng) return;
-    memset(rng,0, sizeof(*rng));
+    memset(rng, 0, sizeof(*rng));
 
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+#if defined(CLOCK_REALTIME)
+    if (clock_gettime(CLOCK_REALTIME, &ts) != 0) {
+        ts.tv_sec = time(NULL);
+        ts.tv_nsec = 0;
+    }
+#else
+    ts.tv_sec = time(NULL);
+    ts.tv_nsec = 0;
+#endif
 
-    uint32_t t = (uint32_t)ts.tv_sec ^ (uint32_t)ts.tv_nsec;
-    uint32_t p = (uint32_t)getpid();
+    uint64_t t = ((uint64_t)(uint32_t)ts.tv_sec << 32) ^ (uint64_t)(uint32_t)ts.tv_nsec;
+    uint64_t p = (uint64_t)(uint32_t)getpid();
 
     uintptr_t tid = (uintptr_t)pthread_self();
-    uint32_t th = (uint32_t)(tid ^ (tid >> 32));
+    uint64_t th = (uint64_t)tid;
 
-    uint32_t seed = mix_u32(t ^ (p * 2654435761u) ^ (th * 1013904223u));
+    uint64_t seed = (uint64_t)mix_u32((uint32_t)(t ^ (t >> 32) ^ p ^ th ^ (th >> 32)));
+    seed = (seed << 32) ^ (uint64_t)mix_u32((uint32_t)(seed ^ 0xA5A5A5A5u));
 
-    int rc = initstate_r((unsigned int)seed,
-                          rng->state_buf,
-                          sizeof(rng->state_buf),
-                          &rng->rd);
-    if (rc != 0) {
-        errno = rc;
-        die("rw_rng_init_time_seed: initstate() failed: %s", strerror(errno));
+    /* splitmix64 has a fixed-point at 0; avoid it */
+    if (seed == 0) {
+        seed = 0xD1B54A32D192ED03ULL;
     }
 
+    rng->state = seed;
     rng->initialized = 1;
 }
 
@@ -55,22 +67,11 @@ double rw_rng_next01(rw_rng_t *rng) {
         die("rw_rng_next01: RNG not initialized");
     }
 
-    int32_t val = 0;
+    uint64_t x = splitmix64_next(&rng->state);
 
-    if (random_r(&rng->rd, &val) != 0) {
-        die("rw_rng_next01: random_r() failed");
-    }
-
-    uint32_t u = (uint32_t)val;
-    return (double)(u) / (double)UINT32_MAX + 1.0;
-}
-
-static pos_t step_choice(pos_t p, double r) {
-    if (r < 0.0) r = 0.0;
-    if (r > 1.0) r = 0.999999999;
-
-    (void)p;
-    return p;
+    /* Convert to [0,1) using the top 53 bits for a uniform double. */
+    const uint64_t top53 = x >> 11;
+    return (double)top53 * (1.0 / 9007199254740992.0); /* 2^53 */
 }
 
 void random_walk_run(const world_t *w,
@@ -172,4 +173,3 @@ void random_walk_run(const world_t *w,
     *out_reached_origin = 0;
     *out_success_leq_k = 0;
 }
-

@@ -7,12 +7,12 @@
 
 /**
  * @file types.h
- * @brief Internal domain types shared between server and client logic.
+ * @brief Domain types shared by server and client (host/internal representation).
  *
- * Important:
- * - These types are for internal logic (world, simulation, results).
- * - They are NOT a stable wire format for IPC.
- * - For socket communication, use `protocol.h` wire types (`rw_wire_*`).
+ * These types represent in-memory simulation data (world, positions, probabilities,
+ * results). They are **not** the IPC wire format.
+ *
+ * For socket communication, use the wire types in `protocol.h` (prefixed `rw_wire_*`).
  */
 
 #include <stdint.h>
@@ -79,9 +79,11 @@ typedef enum {
 typedef struct {
     /** Number of trials performed from this cell. */
     uint32_t trials;
-    /** Sum of steps across all trials (used for average). */
+
+    /** Sum of steps across trials (typically only counting successful trials). */
     uint64_t sum_steps;
-    /** Count of trials that reached the goal within K steps. */
+
+    /** Number of trials that succeeded within K steps. */
     uint32_t succes_leq_k;
 } cell_stats_t;
 

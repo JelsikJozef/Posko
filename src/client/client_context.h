@@ -31,3 +31,4 @@ typedef struct {
 } client_context_t;
 
 #endif //SEMPRACA_CLIENT_CONTEXT_H
+

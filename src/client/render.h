@@ -32,3 +32,4 @@ void render_summary_avg(void);
 void render_summary_prob(void);
 
 #endif //SEMPRACA_RENDER_H
+

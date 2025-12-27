@@ -114,3 +114,4 @@ void world_generate_obstacles(world_t *w, int percent, uint32_t seed) {
         w->obstacles[0] = 0; /* Ensure origin (0,0) is always free. */
     }
 }
+

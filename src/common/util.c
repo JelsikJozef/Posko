@@ -24,7 +24,22 @@
 static void print_time_prefix(FILE *out) {
     time_t t = time(NULL);
     struct tm tmv;
-    localtime_r(&t, &tmv);
+
+/* Prefer localtime_r when we have POSIX features enabled; otherwise fall back.
+ * (If localtime_r isn't declared, calling it causes an implicit-declaration warning.) */
+#if defined(_POSIX_VERSION)
+    if (localtime_r(&t, &tmv) == NULL) {
+        memset(&tmv, 0, sizeof(tmv));
+    }
+#else
+    struct tm *ptm = localtime(&t);
+    if (ptm) {
+        tmv = *ptm;
+    } else {
+        memset(&tmv, 0, sizeof(tmv));
+    }
+#endif
+
     fprintf(out, "[%02d:%02d:%02d] ", tmv.tm_hour, tmv.tm_min, tmv.tm_sec);
 }
 
@@ -96,4 +111,20 @@ void die(const char *fmt,...) {
         fflush(stderr);
     }
     exit(EXIT_FAILURE);
+}
+
+int rw_copy_socket_path(char *dst, size_t dst_size, const char *src) {
+    if (!dst || dst_size == 0 || !src) {
+        return -1;
+    }
+
+    size_t n = strlen(src);
+    if (n >= dst_size) {
+        /* doesn't fit incl. NUL */
+        return -1;
+    }
+
+    memcpy(dst, src, n);
+    dst[n] = '\0';
+    return 0;
 }
