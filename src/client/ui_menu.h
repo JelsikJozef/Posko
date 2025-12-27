@@ -25,3 +25,4 @@ void menu_show(void);
 void menu_handle_input(void);
 
 #endif //SEMPRACA_UI_MENU_H
+

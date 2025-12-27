@@ -5,6 +5,8 @@
 #ifndef SEMPRACA_UTIL_H
 #define SEMPRACA_UTIL_H
 
+#include <stddef.h>
+
 /**
  * @file util.h
  * @brief Small logging and fatal-error helpers.
@@ -42,5 +44,16 @@ void log_info(const char *fmt, ...);
  */
 void log_error(const char *fmt, ...);
 
-#endif //SEMPRACA_UTIL_H
+/**
+ * @brief Safely copy a Unix-domain socket path into a fixed-size buffer.
+ *
+ * Ensures NUL-termination and fails if the source path doesn't fit.
+ *
+ * @param dst Destination buffer.
+ * @param dst_size Size of destination buffer in bytes.
+ * @param src Source C-string path.
+ * @return 0 on success, -1 if args invalid or src doesn't fit.
+ */
+int rw_copy_socket_path(char *dst, size_t dst_size, const char *src);
 
+#endif //SEMPRACA_UTIL_H

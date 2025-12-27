@@ -38,25 +38,28 @@ typedef struct {
 
 /**
  * @brief Server runtime context.
+ *
+ * Contains both configuration (world/probabilities/limits) and runtime state
+ * (clients, progress, mode). Use the helper functions below for synchronized access.
  */
 typedef struct server_context{
-    /* simulation parameters */
-    world_kinds_t world_kind;
-    world_size_t world_size;
-    move_probs_t probs;
-    uint32_t k_max_steps;
+    /* Simulation parameters (configured at startup or via IPC). */
+    world_kind_t world_kind;   /**< World kind/topology. */
+    world_size_t world_size;   /**< World dimensions. */
+    move_probs_t probs;        /**< Movement probabilities for each step direction. */
+    uint32_t k_max_steps;      /**< K threshold used for success-within-K metrics. */
 
-    uint32_t total_reps;
-    uint32_t current_rep;
+    uint32_t total_reps;       /**< Planned number of repetitions. */
+    uint32_t current_rep;      /**< Current repetition index (0-based). */
 
-    global_mode_t global_mode;
+    global_mode_t global_mode; /**< Current server mode (interactive/summary). */
 
-    /* clients */
-    client_list_t clients;
+    /* Clients */
+    client_list_t clients;     /**< Connected client sockets. */
 
-    /* synchronization */
-    pthread_mutex_t clients_mtx;
-    pthread_mutex_t state_mtx; /**< Protects `current_rep` and `global_mode`. */
+    /* Synchronization */
+    pthread_mutex_t clients_mtx; /**< Protects @ref server_context_t::clients. */
+    pthread_mutex_t state_mtx;   /**< Protects @ref server_context_t::current_rep and @ref server_context_t::global_mode. */
 
 } server_context_t;
 

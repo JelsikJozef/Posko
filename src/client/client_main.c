@@ -67,6 +67,14 @@ static void handle_server_message(int fd) {
         return;
     }
 
+    if (hdr.type == RW_MSG_PROGRESS &&
+    hdr.payload_len == sizeof(rw_progress_t)) {
+        rw_progress_t p;
+        rw_recv_payload(fd, &p, sizeof(p));
+        log_info("PROGRESS: %u/%u", p.current_rep, p.total_reps);
+        return;
+    }
+
     /* other messages are ignored for now */
     if (hdr.payload_len > 0) {
         drain_payload(fd, hdr.payload_len);

@@ -29,3 +29,4 @@ int save_results(const char *filename);
 int load_results(const char *filename);
 
 #endif //SEMPRACA_STORAGE_H
+

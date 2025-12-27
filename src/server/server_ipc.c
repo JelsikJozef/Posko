@@ -104,8 +104,10 @@ int server_ipc_start(const char *socket_path, struct server_context *ctx) {
     }
 
     g_ctx = ctx;
-    strncpy(socket_path_buf, socket_path, sizeof(socket_path_buf)-1);
-    socket_path_buf[sizeof(socket_path_buf)-1] = '\0';
+    if (rw_copy_socket_path(socket_path_buf, sizeof(socket_path_buf), socket_path) != 0) {
+        log_error("Socket path too long");
+        return -1;
+    }
 
     listen_fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (listen_fd < 0) {
@@ -114,7 +116,10 @@ int server_ipc_start(const char *socket_path, struct server_context *ctx) {
 
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, socket_path_buf, sizeof(addr.sun_path)-1);
+    if (rw_copy_socket_path(addr.sun_path, sizeof(addr.sun_path), socket_path_buf) != 0) {
+        log_error("Socket path too long for sockaddr_un.sun_path");
+        return -1;
+    }
 
     /*if socket exists from previous run */
     unlink(socket_path_buf);

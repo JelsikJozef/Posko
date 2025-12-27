@@ -184,7 +184,7 @@ typedef struct {
     rw_wire_world_kinds_t world_kind;
 
     uint32_t cell_count;       /**< size.width * size.height */
-    uint32_t inlcuded_fields;  /**< Bitmask of `rw_snapshot_field_t` values. */
+    uint32_t included_fields;  /**< Bitmask of `rw_snapshot_field_t` values. */
 } rw_snapshot_begin_t;
 #pragma pack(pop)
 

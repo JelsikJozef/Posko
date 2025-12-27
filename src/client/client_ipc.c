@@ -38,7 +38,11 @@ int client_ipc_connect(const char* socket_path) {
     struct sockaddr_un addr;
     memset(&addr, 0, sizeof(addr));
     addr.sun_family = AF_UNIX;
-    strncpy(addr.sun_path, socket_path, sizeof(addr.sun_path)-1);
+    if (rw_copy_socket_path(addr.sun_path, sizeof(addr.sun_path), socket_path) != 0) {
+        log_error("Socket path too long");
+        close(fd);
+        return -1;
+    }
 
     if (connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
         log_error("connect() to server socket failed");
@@ -119,3 +123,4 @@ int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
     }
     return 0;
 }
+
