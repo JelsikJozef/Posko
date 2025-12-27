@@ -41,7 +41,7 @@ typedef struct {
  */
 typedef struct server_context{
     /* simulation parameters */
-    world_kinds_t world_kind;
+    world_kind_t world_kind;
     world_size_t world_size;
     move_probs_t probs;
     uint32_t k_max_steps;

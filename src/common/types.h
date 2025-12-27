@@ -61,7 +61,7 @@ typedef enum {
     WORLD_WRAP = 1,
     /** World contains obstacles and does not wrap. */
     WORLD_OBSTACLES = 2,
-} world_kinds_t;
+} world_kind_t;
 
 /**
  * @brief Client-side view selection for rendering/aggregation in summary mode.

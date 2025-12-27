@@ -5,6 +5,7 @@
 #include "server_ipc.h"
 #include "server_context.h"
 #include "../common/util.h"
+#include "world.h"
 
 #include <unistd.h>
 
@@ -41,7 +42,17 @@ int main(void) {
     ctx.current_rep = 0;
     ctx.global_mode = MODE_SUMMARY;
 
+    world_t world;
+    world_size_t sz = {.width = 10, .height = 10};
+    world_init(&world, WORLD_OBSTACLES, sz);
+    world_generate_obstacles(&world, 20, 86785);
+
+    log_info("obstacle(0,0)=%d", world_is_obstacle_xy(&world,0,0));
+    log_info("obstacle(3,4)=%d", world_is_obstacle_xy(&world,3,4));
+    world_destroy(&world);
+
     server_ipc_start("/tmp/rw_test.sock", &ctx);
+
 
     while (1) pause();
 }
