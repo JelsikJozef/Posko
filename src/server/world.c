@@ -14,6 +14,105 @@
 #include <stdlib.h>
 #include <string.h>
 
+static const int kNeighborDirs[4][2] = {
+    {1, 0}, {-1, 0}, {0, 1}, {0, -1}
+};
+
+static void world_mark_reachable(const world_t *w,
+                                 uint8_t *reachable,
+                                 uint32_t *queue) {
+    if (!w || !reachable || !queue) return;
+
+    uint32_t n = world_cell_count(w);
+    if (n == 0) return;
+
+    memset(reachable, 0, n);
+
+    if (w->obstacles[0]) {
+        return; /* origin blocked – nothing reachable */
+    }
+
+    uint32_t width = (uint32_t)w->size.width;
+    uint32_t head = 0;
+    uint32_t tail = 0;
+    queue[tail++] = 0;
+    reachable[0] = 1;
+
+    while (head < tail) {
+        uint32_t idx = queue[head++];
+        int32_t x = (int32_t)(idx % width);
+        int32_t y = (int32_t)(idx / width);
+
+        for (int i = 0; i < 4; i++) {
+            int32_t nx = x + kNeighborDirs[i][0];
+            int32_t ny = y + kNeighborDirs[i][1];
+            if (!world_in_bounds(w, nx, ny)) continue;
+            uint32_t nidx = world_index(w, nx, ny);
+            if (w->obstacles[nidx]) continue;
+            if (reachable[nidx]) continue;
+            reachable[nidx] = 1;
+            queue[tail++] = nidx;
+        }
+    }
+}
+
+static void world_carve_path_to_origin(world_t *w, uint32_t idx) {
+    if (!w || !w->obstacles) return;
+
+    uint32_t width = (uint32_t)w->size.width;
+    if (width == 0) return;
+
+    uint32_t height = (uint32_t)w->size.height;
+    if (height == 0) return;
+
+    if (idx >= width * height) return;
+
+    int32_t x = (int32_t)(idx % width);
+    int32_t y = (int32_t)(idx / width);
+
+    /* Clear the starting cell and carve an axis-aligned corridor back to origin. */
+    w->obstacles[idx] = 0;
+    while (x > 0) {
+        x--;
+        w->obstacles[world_index(w, x, y)] = 0;
+    }
+    while (y > 0) {
+        y--;
+        w->obstacles[world_index(w, x, y)] = 0;
+    }
+}
+
+static void world_enforce_origin_reachability(world_t *w) {
+    if (!w || !w->obstacles) return;
+
+    uint32_t n = world_cell_count(w);
+    if (n == 0) return;
+
+    uint8_t *reachable = (uint8_t*)malloc(n);
+    uint32_t *queue = (uint32_t*)malloc(sizeof(uint32_t) * (size_t)n);
+    if (!reachable || !queue) {
+        free(reachable);
+        free(queue);
+        return;
+    }
+
+    int fixed_any;
+    do {
+        fixed_any = 0;
+        world_mark_reachable(w, reachable, queue);
+        for (uint32_t i = 0; i < n; i++) {
+            if (w->obstacles[i] == 0 && reachable[i] == 0) {
+                world_carve_path_to_origin(w, i);
+                fixed_any = 1;
+                break; /* re-run flood fill after each carve */
+            }
+        }
+    } while (fixed_any);
+
+    free(queue);
+    free(reachable);
+}
+
 /* Simple deterministic RNG (LCG) to generate obstacles.
  * Note: this is not cryptographically secure; it's only for reproducible maps.
  */
@@ -113,5 +212,6 @@ void world_generate_obstacles(world_t *w, int percent, uint32_t seed) {
     if (n > 0) {
         w->obstacles[0] = 0; /* Ensure origin (0,0) is always free. */
     }
-}
 
+    world_enforce_origin_reachability(w);
+}

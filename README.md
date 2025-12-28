@@ -124,7 +124,13 @@ Ponúkne dve cesty:
 
 Následne klient pošle na server `CREATE_SIM` alebo `LOAD_WORLD`.
 
-Poznámka: momentálne server generuje prekážky deterministicky (seed + percent) pri obstacles móde.
+1Poznámka: momentálne server generuje prekážky deterministicky (seed + percent) pri obstacles móde a po generovaní garantuje, že každá voľná bunka je dosiahnuteľná z (0,0).
+
+#### Reachability guarantee pri obstacle svete
+
+- Po náhodnom rozmiestnení prekážok server spraví flood-fill od (0,0).
+- Každá voľná bunka, ktorú flood-fill nezasiahol, dostane vyčistený koridor smerom k osi X,Y (t.j. „vyrežú“ sa prekážky na ceste k nule).
+- Výsledkom je, že žiadna voľná bunka nezostane izolovaná a vždy existuje aspoň Manhattan cesta z (0,0) do ľubovoľnej voľnej bunky.
 
 ### 2) Join existing simulation
 
