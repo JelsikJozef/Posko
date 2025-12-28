@@ -5,6 +5,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <inttypes.h>
+#include <math.h>
 
 /**
  * @file snapshot_reciever.c
@@ -43,6 +44,7 @@ typedef struct {
 } snapshot_state_t;
 
 static snapshot_state_t g_snap = {0};
+static uint32_t g_k_max_steps = 0;
 
 static void free_snapshot_buffers(void) {
     free(g_snap.obstacles);
@@ -151,67 +153,266 @@ int client_snapshot_chunk(const rw_snapshot_chunk_t *chunk) {
     return 0;
 }
 
-static void render_ascii(void) {
+static int cell_radius(uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, int wrap) {
+    if (wrap) {
+        uint32_t dx = sx;
+        uint32_t dy = sy;
+        uint32_t dx_wrap = (w > sx) ? (w - sx) : 0u;
+        uint32_t dy_wrap = (h > sy) ? (h - sy) : 0u;
+        if (dx_wrap < dx) dx = dx_wrap;
+        if (dy_wrap < dy) dy = dy_wrap;
+        return (int)(dx + dy);
+    }
+    return (int)(sx + sy);
+}
+
+static void render_radial_summary(void) {
     uint32_t w = g_snap.size.width;
     uint32_t h = g_snap.size.height;
-    uint32_t cells = g_snap.cell_count;
-    if (w == 0 || h == 0 || cells != w * h) {
+    uint32_t cells_total = g_snap.cell_count;
+    if (w == 0 || h == 0 || cells_total != w * h) {
         log_error("Invalid snapshot dimensions");
         return;
     }
 
-    for (uint32_t y = 0; y < h; ++y) {
-        for (uint32_t x = 0; x < w; ++x) {
-            uint32_t idx = y * w + x;
-            char ch = '?';
+    /* Distance is measured from origin (0,0). For WRAP worlds use toroidal
+     * Manhattan distance; for obstacle worlds use standard Manhattan.
+     */
+    const int wrap = (g_snap.world_kind == RW_WIRE_WORLD_WRAP) ? 1 : 0;
+    int r_max = wrap ? (int)(w / 2u + h / 2u)
+                     : (int)((w ? w - 1u : 0u) + (h ? h - 1u : 0u));
+    if (r_max < 0) {
+        log_error("Invalid r_max");
+        return;
+    }
+    size_t bins = (size_t)(r_max + 1);
 
-            if (g_snap.obstacles && g_snap.obstacles[idx]) {
-                ch = '#';
-            } else {
-                /* Only render stats if trials available. */
-                uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0;
-                if (trials == 0) {
-                    ch = '?';
-                } else {
-                    double value = 0.0;
-                    int palette_len = (int)strlen(SNAP_PALETTE);
-                    if (g_snap.sum_steps) {
-                        value = (double)g_snap.sum_steps[idx] / (double)trials; /* avg steps */
-                    } else if (g_snap.succ_leq_k) {
-                        value = (double)g_snap.succ_leq_k[idx] / (double)trials; /* probability */
-                    }
-
-                    /* Simple clamping and scaling into palette range. */
-                    if (value < 0.0) value = 0.0;
-                    if (value > 1e6) value = 1e6; /* arbitrary cap to avoid overflow */
-
-                    /* Map value into palette by logarithmic-ish scaling. */
-                    double norm = value;
-                    if (norm > 1.0) {
-                        norm = 1.0 - (1.0 / (norm + 1.0));
-                    }
-                    int idx_palette = (int)(norm * (palette_len - 1));
-                    if (idx_palette < 0) idx_palette = 0;
-                    if (idx_palette >= palette_len) idx_palette = palette_len - 1;
-                    ch = SNAP_PALETTE[idx_palette];
-                }
-            }
-
-            if (x == 0 && y == 0) {
-                ch = 'O'; /* origin marker */
-            }
-            putchar(ch);
-        }
-        putchar('\n');
+    uint32_t *cells = (uint32_t *)calloc(bins, sizeof(uint32_t));
+    uint32_t *n_used = (uint32_t *)calloc(bins, sizeof(uint32_t));
+    double *sum_avg_steps = (double *)calloc(bins, sizeof(double));
+    double *sum_p = (double *)calloc(bins, sizeof(double));
+    uint64_t *sum_steps_r = (uint64_t *)calloc(bins, sizeof(uint64_t));
+    uint32_t *succ_count_r = (uint32_t *)calloc(bins, sizeof(uint32_t));
+    if (!cells || !n_used || !sum_avg_steps || !sum_p || !sum_steps_r || !succ_count_r) {
+        log_error("Out of memory in radial summary");
+        free(cells); free(n_used); free(sum_avg_steps); free(sum_p);
+        free(sum_steps_r); free(succ_count_r);
+        return;
     }
 
-    printf("Legend: '#'=obstacle, 'O'=origin, '?'=no trials, palette='%s'\n", SNAP_PALETTE);
+    uint32_t non_obstacle_cells = 0;
+    uint32_t used_cells = 0;
+    double global_max_avg = 0.0;
+    int obstacles_present = 0;
+
+    /* First pass: aggregate by radius. */
+    for (uint32_t sy = 0; sy < h; ++sy) {
+        for (uint32_t sx = 0; sx < w; ++sx) {
+            uint32_t idx = sy * w + sx;
+            int r = cell_radius(sx, sy, w, h, wrap);
+            if (r < 0 || r > r_max) continue;
+
+            int obstacle = g_snap.obstacles && g_snap.obstacles[idx];
+            if (obstacle) {
+                obstacles_present = 1;
+            } else {
+                cells[r]++;
+                non_obstacle_cells++;
+            }
+
+            if (obstacle) continue;
+
+            uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0u;
+            uint32_t succ = g_snap.succ_leq_k ? g_snap.succ_leq_k[idx] : 0u;
+            uint64_t sum_steps_cell = g_snap.sum_steps ? g_snap.sum_steps[idx] : 0u;
+            if (trials == 0) continue;
+            n_used[r]++;
+            used_cells++;
+
+            sum_steps_r[r] += sum_steps_cell;
+            succ_count_r[r] += succ;
+
+            if (g_snap.sum_steps && succ > 0) {
+                double avg_i = (double)sum_steps_cell / (double)succ;
+                if (avg_i > global_max_avg) global_max_avg = avg_i;
+            }
+            if (g_snap.succ_leq_k) {
+                double p_i = (double)succ / (double)trials;
+                sum_p[r] += p_i;
+            }
+        }
+    }
+
+    /* Compute per-ring averages. */
+    double *avg_r = (double *)calloc(bins, sizeof(double));
+    double *p_r = (double *)calloc(bins, sizeof(double));
+    if (!avg_r || !p_r) {
+        log_error("Out of memory in radial summary (avg arrays)");
+        free(cells); free(n_used); free(sum_avg_steps); free(sum_p);
+        free(sum_steps_r); free(succ_count_r);
+        free(avg_r); free(p_r);
+        return;
+    }
+    for (int r = 0; r <= r_max; ++r) {
+        if (succ_count_r[r] > 0 && g_snap.sum_steps) {
+            avg_r[r] = (double)sum_steps_r[r] / (double)succ_count_r[r];
+        } else {
+            avg_r[r] = NAN;
+        }
+        if (n_used[r] > 0 && g_snap.succ_leq_k) {
+            p_r[r] = sum_p[r] / (double)n_used[r];
+        } else {
+            p_r[r] = NAN;
+        }
+    }
+
+    /* Second pass: obstacle-induced local increases. */
+    double max_increase = -INFINITY;
+    int have_increase = 0;
+    if (g_snap.sum_steps) {
+        for (uint32_t sy = 0; sy < h; ++sy) {
+            for (uint32_t sx = 0; sx < w; ++sx) {
+                uint32_t idx = sy * w + sx;
+                int r = cell_radius(sx, sy, w, h, wrap);
+                if (r < 0 || r > r_max) continue;
+                if (g_snap.obstacles && g_snap.obstacles[idx]) continue;
+
+                uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0u;
+                if (trials == 0) continue;
+
+                double baseline = avg_r[r];
+                if (isnan(baseline) || baseline == 0.0) continue;
+
+                double avg_i = (double)g_snap.sum_steps[idx] / (double)trials;
+                double inc = (avg_i - baseline) / baseline;
+                if (inc > max_increase) {
+                    max_increase = inc;
+                    have_increase = 1;
+                }
+            }
+        }
+    }
+
+    printf("RADIAL SUMMARY (K = %u)\n\n", (unsigned)g_k_max_steps);
+    printf("r  cells  avg_steps  p(success<=K)\n");
+    printf("----------------------------------\n");
+    for (int r = 0; r <= r_max; ++r) {
+        if (cells[r] == 0) continue;
+        double avg = (n_used[r] > 0) ? avg_r[r] : NAN;
+        double prob = (n_used[r] > 0) ? p_r[r] : NAN;
+
+        printf("%-2d %5u ", r, cells[r]);
+        if (isnan(avg)) {
+            printf("%10s ", "0.0");
+        } else {
+            printf("%10.1f ", avg);
+        }
+        if (isnan(prob)) {
+            printf("%13s", "0.0");
+        } else {
+            printf("%13.3f", prob);
+        }
+        printf("\n");
+    }
+    printf("\n");
+
+    /* Heuristic summary bullets. */
+    char summaries[6][128];
+    int summary_count = 0;
+
+    /* 3.1 Up to r=R, reaching origin almost certain. */
+    int max_high_p_r = -1;
+    for (int r = 0; r <= r_max; ++r) {
+        if (!isnan(p_r[r]) && p_r[r] >= 0.95) {
+            max_high_p_r = r;
+        }
+    }
+    if (max_high_p_r >= 0 && summary_count < 6) {
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "Up to r=%d, reaching the origin is almost certain (>=95%%).",
+                 max_high_p_r);
+    }
+
+    /* 3.2 Probability drops rapidly between r=a and r=b. */
+    double max_drop = -INFINITY;
+    int drop_at_r = -1;
+    for (int r = 1; r <= r_max; ++r) {
+        if (isnan(p_r[r]) || isnan(p_r[r - 1])) continue;
+        double drop = p_r[r - 1] - p_r[r];
+        if (drop > max_drop) {
+            max_drop = drop;
+            drop_at_r = r;
+        }
+    }
+    if (drop_at_r >= 1 && max_drop >= 0.15 && summary_count < 6) {
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "Between r=%d and r=%d, probability drops rapidly.",
+                 drop_at_r - 1, drop_at_r);
+    }
+
+    /* 3.3 For r>=X, success unlikely. */
+    int first_low = -1;
+    for (int r = 0; r <= r_max; ++r) {
+        if (!isnan(p_r[r]) && p_r[r] < 0.30) {
+            first_low = r;
+            break;
+        }
+    }
+    if (first_low >= 0 && summary_count < 6) {
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "For r>=%d, success within K steps is unlikely (<30%%).",
+                 first_low);
+    }
+
+    /* 3.4 Obstacles cause local increases. */
+    if (have_increase && max_increase >= 0.10 && obstacles_present && summary_count < 6) {
+        int pct = (int)lround(max_increase * 100.0);
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "Obstacles cause local increases of avg steps by up to %d%%.", pct);
+    }
+
+    /* Coverage/fallback bullets to ensure at least 3 lines. */
+    if (summary_count < 6) {
+        double coverage = (non_obstacle_cells == 0) ? 0.0 :
+                          (100.0 * (double)used_cells / (double)non_obstacle_cells);
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "Data coverage: trials on %u/%u cells (%.1f%%).",
+                 used_cells, non_obstacle_cells, coverage);
+    }
+    if (summary_count < 3) {
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "Max observed avg steps (where data exists): %.1f.",
+                 global_max_avg);
+    }
+    if (summary_count < 3) {
+        snprintf(summaries[summary_count++], sizeof(summaries[0]),
+                 "No additional strong patterns detected yet.");
+    }
+
+    printf("SUMMARY:\n");
+    for (int i = 0; i < summary_count && i < 6; ++i) {
+        printf("- %s\n", summaries[i]);
+    }
+    printf("\n");
+
+    free(cells);
+    free(n_used);
+    free(sum_avg_steps);
+    free(sum_p);
+    free(sum_steps_r);
+    free(succ_count_r);
+    free(avg_r);
+    free(p_r);
 }
 
 int client_snapshot_end(void) {
     /* Render assembled snapshot. */
-    render_ascii();
+    render_radial_summary();
     return 0;
+}
+
+void client_snapshot_set_k_max(uint32_t k_max_steps) {
+    g_k_max_steps = k_max_steps;
 }
 
 void client_snapshot_free(void) {

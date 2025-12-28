@@ -472,7 +472,8 @@ static void *client_thread(void *arg) {
                 send_error(client_fd, 11, "Snapshot unavailable");
                 continue;
             }
-            if (snapshot_broadcast(g_ctx, g_world, g_results) != 0) {
+            uint32_t snapshot_id = snapshot_next_id();
+            if (snapshot_send_to_client(client_fd, g_world, g_results, snapshot_id) != 0) {
                 send_error(client_fd, 12, "Snapshot send failed");
                 continue;
             }

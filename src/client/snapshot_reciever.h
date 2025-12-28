@@ -67,12 +67,17 @@ int client_snapshot_chunk(const rw_snapshot_chunk_t *chunk);
 /**
  * @brief Finish snapshot assembly and render it.
  *
- * Currently renders an ASCII visualization to stdout.
+ * Renders a radial summary table and heuristic summary bullets.
  *
  * @retval 0 Success.
  * @retval -1 Reserved for future use.
  */
 int client_snapshot_end(void);
+
+/**
+ * @brief Cache K (k_max_steps) from WELCOME/status for snapshot summaries.
+ */
+void client_snapshot_set_k_max(uint32_t k_max_steps);
 
 /**
  * @brief Free any allocated snapshot buffers.
