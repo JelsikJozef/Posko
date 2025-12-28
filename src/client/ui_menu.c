@@ -14,7 +14,28 @@
 #include <string.h>
 #include <unistd.h>
 
+/**
+ * @file ui_menu.c
+ * @brief Interactive console UI for the client.
+ *
+ * The menu connects to the server over an AF_UNIX socket, performs a JOIN +
+ * blocking WELCOME handshake, and then starts the dispatcher.
+ *
+ * Design notes / invariants:
+ * - After the dispatcher is started, it becomes the only socket reader.
+ *   The menu must not perform direct reads from the socket FD.
+ * - Snapshot reception/rendering is asynchronous; the menu triggers snapshot
+ *   requests and can re-render or inspect the last received snapshot.
+ * - Interactive input is read from stdin and is expected to be used from a TTY.
+ */
+
+/**
+ * @brief Print a compact status summary for the user.
+ *
+ * @param st Latest status received from the server.
+ */
 static void print_status_summary(const rw_status_t *st) {
+    // NOTE: `st` is expected to be non-NULL (it comes from a successful status query).
     const char *state = "?";
     if (st->state == RW_WIRE_SIM_LOBBY) state = "LOBBY";
     else if (st->state == RW_WIRE_SIM_RUNNING) state = "RUNNING";
@@ -29,6 +50,16 @@ static void print_status_summary(const rw_status_t *st) {
            (unsigned)st->current_rep);
 }
 
+/**
+ * @brief Read one line from stdin and strip trailing newlines.
+ *
+ * Uses fgets() and then removes any trailing '\n' and '\r' characters.
+ * Long lines are truncated by fgets().
+ *
+ * @param buf Destination buffer (NUL-terminated on success).
+ * @param cap Capacity of @p buf in bytes.
+ * @return 0 on success, -1 on EOF or input error.
+ */
 static int read_line(char *buf, size_t cap) {
     if (!buf || cap == 0) return -1;
     if (!fgets(buf, (int)cap, stdin)) {
@@ -42,6 +73,15 @@ static int read_line(char *buf, size_t cap) {
     return 0;
 }
 
+/**
+ * @brief Prompt the user for an unsigned 32-bit integer.
+ *
+ * The function keeps prompting until a valid number is entered or stdin ends.
+ *
+ * @param label Prompt label printed to stdout.
+ * @param out Output value on success.
+ * @return 0 on success, -1 on EOF/input error.
+ */
 static int prompt_u32(const char *label, uint32_t *out) {
     char line[128];
     while (1) {
@@ -57,6 +97,17 @@ static int prompt_u32(const char *label, uint32_t *out) {
     }
 }
 
+/**
+ * @brief Prompt the user for a floating-point number.
+ *
+ * Note: This helper only parses a double; it does not validate ranges.
+ * Any semantic validation (e.g., probabilities in [0,1]) is expected to happen
+ * on the server side.
+ *
+ * @param label Prompt label printed to stdout.
+ * @param out Output value on success.
+ * @return 0 on success, -1 on EOF/input error.
+ */
 static int prompt_double(const char *label, double *out) {
     char line[128];
     while (1) {
@@ -72,6 +123,15 @@ static int prompt_double(const char *label, double *out) {
     }
 }
 
+/**
+ * @brief Prompt the user for a yes/no answer.
+ *
+ * Accepts 'y'/'Y' and 'n'/'N' (first character is checked).
+ *
+ * @param label Prompt label printed to stdout.
+ * @param out_yes Output flag set to 1 for yes, 0 for no.
+ * @return 0 on success, -1 on EOF/input error.
+ */
 static int prompt_yes_no(const char *label, int *out_yes) {
     char line[32];
     while (1) {
@@ -90,6 +150,16 @@ static int prompt_yes_no(const char *label, int *out_yes) {
     }
 }
 
+/**
+ * @brief Handle the "New simulation" menu action.
+ *
+ * The user can either:
+ * - load a saved RWRES file (world + results), or
+ * - enter a fresh world configuration and create a new simulation.
+ *
+ * @param fd Connected server socket.
+ * @return 0 on success, -1 on failure.
+ */
 static int menu_new_sim(int fd) {
     int use_load = 0;
     if (prompt_yes_no("Load world from file?", &use_load) != 0) return -1;
@@ -146,6 +216,21 @@ static int menu_new_sim(int fd) {
     return client_ipc_create_sim(fd, &req);
 }
 
+/**
+ * @brief Handle the "Restart finished" menu action.
+ *
+ * Workflow:
+ * 1) Load an RWRES file (world + results).
+ * 2) Pick a new number of replications.
+ * 3) Request a restart on the server.
+ * 4) Save results to a new RWRES file.
+ *
+ * Note: Progress/END notifications are printed asynchronously by the dispatcher;
+ * this function intentionally does not block waiting for END.
+ *
+ * @param fd Connected server socket.
+ * @return 0 on success, -1 on failure.
+ */
 static int menu_restart_finished(int fd) {
     char load_path[RW_PATH_MAX];
     printf("Load results from file (RWRES path): ");
@@ -182,6 +267,15 @@ static int menu_restart_finished(int fd) {
     return 0;
 }
 
+/**
+ * @brief Run the interactive client menu.
+ *
+ * The function connects to the server socket, performs a JOIN + blocking WELCOME
+ * handshake, then starts the dispatcher and enters a prompt/command loop.
+ *
+ * @param socket_path Path to the AF_UNIX server socket.
+ * @return 0 on normal termination, non-zero on immediate argument error.
+ */
 int ui_menu_run(const char *socket_path) {
     if (!socket_path) return 1;
 
