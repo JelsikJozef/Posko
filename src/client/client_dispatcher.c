@@ -15,40 +15,97 @@
 #include <unistd.h>
 
 /**
- * v1 design: single global dispatcher instance.
+ * @brief Global dispatcher state (v1: a single instance).
  *
- * Notes:
- * - This thread is the ONLY reader of the socket FD.
- * - Async notifications (PROGRESS/END/MODE_CHANGED) are consumed silently so they
- *   don't destroy the interactive menu prompt.
- * - Snapshot stream is forwarded to snapshot_reciever.* and rendered on END.
+ * Invariants:
+ * - `fd` is the connected socket for the lifetime of the dispatcher.
+ * - `thread` is the single reader thread.
+ * - `mtx` + `cv` protect all fields below.
+ * - v1 supports only one waiting synchronous request at a time.
  */
-
 typedef struct {
     int fd;
-    pthread_t thread;
 
+    pthread_t thread;
     pthread_mutex_t mtx;
     pthread_cond_t cv;
 
-    int running;
-    int stop;
+    int running;     /**< 1 while reader thread is alive. */
+    int stop;        /**< Request reader thread to stop. */
 
-    /* Serialize one in-flight sync op. */
-    int waiting;
+    int waiting;     /**< 1 while a caller is waiting in dispatcher_send_and_wait(). */
 
     rw_msg_type_t expected[3];
     size_t expected_count;
 
-    int resp_ready;
-    rw_msg_hdr_t resp_hdr;
-    void *resp_payload;
+    int resp_ready;        /**< 1 when response slot contains a response. */
+    rw_msg_hdr_t resp_hdr; /**< Header for buffered response. */
+    void *resp_payload;    /**< malloc()'d payload for buffered response. */
 
-    int last_err; /* 0 ok, else errno-like */
-} dispatcher_t;
+    int last_err; /**< errno-like error code set by reader thread. */
+} dispatcher_state_t;
 
-static dispatcher_t g_d = {0};
+static dispatcher_state_t g_d;
 
+/**
+ * @file client_dispatcher.c
+ * @brief Single-reader socket dispatcher for the interactive client.
+ *
+ * ## Problem this solves
+ * A Unix stream socket is a sequential byte stream. If multiple threads call
+ * `rw_recv_hdr()` / `rw_recv_payload()` concurrently on the same FD, they will
+ * race and corrupt message framing.
+ *
+ * This module enforces a **single-reader** model:
+ * - exactly one background thread (`reader_main`) performs all blocking reads
+ * - other code may still send requests, but synchronous request/response is done
+ *   via `dispatcher_send_and_wait()`
+ *
+ * ## What the reader thread does
+ * The reader thread reads (hdr + payload) and then routes the message:
+ * - Async notifications are consumed and dropped:
+ *   - `RW_MSG_PROGRESS`, `RW_MSG_END`, `RW_MSG_GLOBAL_MODE_CHANGED`
+ *   (The interactive menu must not be spammed or the prompt would get corrupted.)
+ * - Snapshot stream is forwarded to `snapshot_reciever.*`:
+ *   - `RW_MSG_SNAPSHOT_BEGIN` -> `client_snapshot_begin()`
+ *   - `RW_MSG_SNAPSHOT_CHUNK` -> `client_snapshot_chunk()`
+ *   - `RW_MSG_SNAPSHOT_END`   -> `client_snapshot_end()`
+ * - Sync responses for a waiting caller are delivered into a single "response slot"
+ *   if the type matches the caller-provided `expected[]` list.
+ * - Everything else is treated as unexpected/unhandled and is dropped.
+ *
+ * ## Synchronization model (v1)
+ * v1 intentionally supports **only one in-flight synchronous request**.
+ * `dispatcher_send_and_wait()` serializes callers with a mutex/cond-var.
+ *
+ * While a caller is "waiting":
+ * - `expected[]` describes which response types are acceptable
+ * - the reader thread copies the first acceptable response into `resp_*`
+ * - the waiting caller wakes up, takes ownership of the allocated payload, and returns
+ *
+ * ## Memory ownership
+ * - The reader thread malloc()'s `payload` for any message with payload_len > 0.
+ * - For async/unhandled messages, *the reader thread frees payload*.
+ * - For a sync response delivered to a waiter, ownership transfers:
+ *   - reader thread stores the pointer in `g_d.resp_payload`
+ *   - `dispatcher_send_and_wait()` returns it via `out_payload`
+ *   - caller must free() it
+ *
+ * ## Error handling
+ * On socket read failure the reader thread:
+ * - sets `last_err` (errno-like)
+ * - sets `stop = 1`
+ * - signals all waiters via condition variable
+ *
+ * Public APIs typically return -1 on error/timeout.
+ */
+
+/**
+ * @brief Return non-zero if message type @p t is in the current expected list.
+ *
+ * Must only be called when `g_d.expected_count` has been set for an active
+ * request (i.e., while a caller is waiting).
+ */
 static int type_expected(rw_msg_type_t t) {
     for (size_t i = 0; i < g_d.expected_count; i++) {
         if (g_d.expected[i] == t) return 1;
@@ -56,6 +113,11 @@ static int type_expected(rw_msg_type_t t) {
     return 0;
 }
 
+/**
+ * @brief Reset the shared response slot and free any stored payload.
+ *
+ * Precondition: caller holds `g_d.mtx`.
+ */
 static void clear_response_slot_locked(void) {
     g_d.resp_ready = 0;
     memset(&g_d.resp_hdr, 0, sizeof(g_d.resp_hdr));
@@ -63,10 +125,24 @@ static void clear_response_slot_locked(void) {
     g_d.resp_payload = NULL;
 }
 
+/**
+ * @brief Store an error code in the dispatcher state.
+ *
+ * Precondition: caller holds `g_d.mtx`.
+ */
 static void set_error_locked(int err) {
     g_d.last_err = err;
 }
 
+/**
+ * @brief Reader thread main loop.
+ *
+ * Responsibilities:
+ * - continuously reads messages from `g_d.fd`
+ * - forwards snapshot stream into snapshot receiver
+ * - silently consumes async notifications
+ * - delivers an expected sync response to the waiting caller (if any)
+ */
 static void *reader_main(void *arg) {
     (void)arg;
 
@@ -189,6 +265,11 @@ static void *reader_main(void *arg) {
     return NULL;
 }
 
+/**
+ * @brief Add @p ms milliseconds to a timespec.
+ *
+ * Used to compute absolute timeout for `pthread_cond_timedwait()`.
+ */
 static void timespec_add_ms(struct timespec *ts, uint32_t ms) {
     ts->tv_sec += (time_t)(ms / 1000u);
     ts->tv_nsec += (long)((ms % 1000u) * 1000000ul);
@@ -198,6 +279,16 @@ static void timespec_add_ms(struct timespec *ts, uint32_t ms) {
     }
 }
 
+/**
+ * @brief Start the dispatcher reader thread for a connected socket.
+ *
+ * Behaviour:
+ * - v1 supports exactly one global dispatcher instance (`g_d`).
+ * - If the dispatcher is already running, this is a no-op (returns 0).
+ *
+ * @param fd Connected client socket FD.
+ * @return 0 on success, -1 on failure.
+ */
 int dispatcher_start(int fd) {
     if (fd < 0) return -1;
 
@@ -231,6 +322,16 @@ int dispatcher_start(int fd) {
     return 0;
 }
 
+/**
+ * @brief Stop the reader thread and release resources.
+ *
+ * Safe to call multiple times.
+ *
+ * Notes:
+ * - Signals the reader thread to exit and joins it.
+ * - Frees any pending response payload.
+ * - Destroys mutex/cond-var and clears global state.
+ */
 void dispatcher_stop(void) {
     if (!g_d.running) {
         return;
@@ -254,6 +355,35 @@ void dispatcher_stop(void) {
     memset(&g_d, 0, sizeof(g_d));
 }
 
+/**
+ * @brief Send a request and synchronously wait for one of the expected response types.
+ *
+ * Contract (v1):
+ * - Only one caller may block waiting for a response at a time; callers are serialized.
+ * - The socket is still read exclusively by the reader thread.
+ * - The response is matched only by *message type* (not by request id).
+ *   Therefore, `expected[]` should be tight (typically {ACK, ERROR}).
+ *
+ * Timeout:
+ * - `timeout_ms == 0` means wait forever.
+ * - otherwise a timed wait is used.
+ *
+ * Ownership:
+ * - On success, if `out_payload != NULL` and response has payload_len > 0,
+ *   `*out_payload` receives a malloc()'d buffer that the caller must free().
+ * - If `out_payload == NULL`, any received payload is freed internally.
+ *
+ * @param fd Connected socket; must match the fd passed into dispatcher_start().
+ * @param req_type Request type to send.
+ * @param payload Request payload pointer (may be NULL if payload_len==0).
+ * @param payload_len Payload size.
+ * @param expected List of acceptable response message types.
+ * @param expected_count Length of @p expected (must be 1..3).
+ * @param timeout_ms Timeout in milliseconds; 0 means no timeout.
+ * @param out_hdr Optional output response header.
+ * @param out_payload Optional output response payload (malloc()'d, caller frees).
+ * @return 0 on success, -1 on timeout or error.
+ */
 int dispatcher_send_and_wait(
     int fd,
     rw_msg_type_t req_type,
@@ -343,4 +473,3 @@ int dispatcher_send_and_wait(
 
     return rc;
 }
-

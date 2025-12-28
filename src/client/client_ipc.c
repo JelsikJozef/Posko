@@ -17,7 +17,37 @@
 
 /**
  * @file client_ipc.c
- * @brief Implementation of client-side IPC helpers.
+ * @brief Client-side IPC helpers (request/response glue) for talking to the server.
+ *
+ * ## What this module does
+ * This file implements small, synchronous helper functions that:
+ * - connect to the server's Unix domain socket (`AF_UNIX`/`SOCK_STREAM`)
+ * - perform the initial handshake (JOIN -> WELCOME)
+ * - send menu/control-plane requests and wait for a matching response
+ *
+ * ## Threading / socket read ownership
+ * After the handshake completes, this client uses `client_dispatcher.*` as a
+ * **single-reader** for the socket:
+ * - Only the dispatcher thread calls `rw_recv_hdr()` / `rw_recv_payload()`.
+ * - The helpers here call `dispatcher_send_and_wait()` to implement
+ *   request/response semantics safely.
+ *
+ * The only direct reads in this module are in @ref client_ipc_recv_welcome, which
+ * is called before `dispatcher_start()`.
+ *
+ * ## Responses, errors, and ownership
+ * Most "menu" requests expect either:
+ * - `RW_MSG_ACK` on success, or
+ * - `RW_MSG_ERROR` on failure.
+ *
+ * When using `dispatcher_send_and_wait()`, the returned payload buffer is
+ * allocated with `malloc()` and **must be freed** by the caller. All functions in
+ * this file free their response buffers before returning.
+ *
+ * ## Return values
+ * Unless documented otherwise:
+ * - returns 0 on success
+ * - returns -1 on any I/O error, timeout, or protocol mismatch
  */
 
 /**
@@ -109,9 +139,67 @@ int client_ipc_recv_welcome(int fd, rw_welcome_t *out_welcome) {
     return 0;
 }
 
-// Remove old multi-reader helpers: drain_payload/consume_async_msg/recv_ack_or_error.
-// All socket reads after handshake are handled by client_dispatcher.c.
+/**
+ * @brief Request a global simulation mode change.
+ *
+ * Sends `RW_MSG_SET_GLOBAL_MODE` with the requested mode.
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` if accepted
+ * - `RW_MSG_ERROR` with @ref rw_error_t if rejected
+ *
+ * After a successful change, the server may also broadcast
+ * `RW_MSG_GLOBAL_MODE_CHANGED` asynchronously (consumed by the dispatcher).
+ *
+ * @param fd Connected client socket.
+ * @param mode Requested new mode in wire format.
+ * @return 0 on success, -1 on failure.
+ */
+int client_ipc_set_global_mode(int fd, rw_wire_global_mode_t mode) {
+    rw_set_global_mode_t req;
+    req.new_mode = mode;
 
+    const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
+    rw_msg_hdr_t rh;
+    void *resp = NULL;
+
+    if (dispatcher_send_and_wait(fd, RW_MSG_SET_GLOBAL_MODE, &req, sizeof(req),
+                                 expected, 2, 5000, &rh, &resp) != 0) {
+        return -1;
+    }
+
+    if (rh.type == RW_MSG_ERROR && rh.payload_len == sizeof(rw_error_t)) {
+        rw_error_t *e = (rw_error_t *)resp;
+        e->error_msg[sizeof(e->error_msg) - 1] = '\0';
+        log_error("Server error (%u): %s", (unsigned)e->error_code, e->error_msg);
+        free(resp);
+        return -1;
+    }
+
+    if (rh.type != RW_MSG_ACK || rh.payload_len != sizeof(rw_ack_t)) {
+        free(resp);
+        return -1;
+    }
+
+    rw_ack_t *ack = (rw_ack_t *)resp;
+    int ok = (ack->request_type == RW_MSG_SET_GLOBAL_MODE && ack->status == 0) ? 0 : -1;
+    free(resp);
+    return ok;
+}
+
+/**
+ * @brief Query server status (state, configuration, permissions).
+ *
+ * Sends `RW_MSG_QUERY_STATUS` containing the client pid.
+ *
+ * Expected responses:
+ * - `RW_MSG_STATUS` with @ref rw_status_t on success
+ * - `RW_MSG_ERROR` with @ref rw_error_t on failure
+ *
+ * @param fd Connected client socket.
+ * @param out_status Output structure filled on success.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_query_status(int fd, rw_status_t *out_status) {
     if (!out_status) return -1;
 
@@ -145,6 +233,19 @@ int client_ipc_query_status(int fd, rw_status_t *out_status) {
     return 0;
 }
 
+/**
+ * @brief Create a new simulation (menu/control-plane).
+ *
+ * Sends `RW_MSG_CREATE_SIM`.
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` with @ref rw_ack_t where `request_type == RW_MSG_CREATE_SIM`
+ * - `RW_MSG_ERROR` with @ref rw_error_t
+ *
+ * @param fd Connected client socket.
+ * @param req Request payload.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_create_sim(int fd, const rw_create_sim_t *req) {
     if (!req) return -1;
 
@@ -175,6 +276,19 @@ int client_ipc_create_sim(int fd, const rw_create_sim_t *req) {
     return ok;
 }
 
+/**
+ * @brief Load a world file on the server (menu/control-plane).
+ *
+ * Sends `RW_MSG_LOAD_WORLD`.
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` with @ref rw_ack_t where `request_type == RW_MSG_LOAD_WORLD`
+ * - `RW_MSG_ERROR` with @ref rw_error_t
+ *
+ * @param fd Connected client socket.
+ * @param req Request payload (includes path), must not be NULL.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_load_world(int fd, const rw_load_world_t *req) {
     if (!req) return -1;
 
@@ -205,6 +319,18 @@ int client_ipc_load_world(int fd, const rw_load_world_t *req) {
     return ok;
 }
 
+/**
+ * @brief Start the currently configured simulation.
+ *
+ * Sends `RW_MSG_START_SIM` (no payload).
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` with @ref rw_ack_t where `request_type == RW_MSG_START_SIM`
+ * - `RW_MSG_ERROR` with @ref rw_error_t
+ *
+ * @param fd Connected client socket.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_start_sim(int fd) {
     const rw_msg_type_t expected[] = { RW_MSG_ACK, RW_MSG_ERROR };
     rw_msg_hdr_t rh;
@@ -233,6 +359,19 @@ int client_ipc_start_sim(int fd) {
     return ok;
 }
 
+/**
+ * @brief Restart simulation using same configuration but different total repetitions.
+ *
+ * Sends `RW_MSG_RESTART_SIM` with requested `total_reps`.
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` with @ref rw_ack_t where `request_type == RW_MSG_RESTART_SIM`
+ * - `RW_MSG_ERROR` with @ref rw_error_t
+ *
+ * @param fd Connected client socket.
+ * @param total_reps New total replications.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_restart_sim(int fd, uint32_t total_reps) {
     rw_restart_sim_t req;
     req.total_reps = total_reps;
@@ -264,6 +403,20 @@ int client_ipc_restart_sim(int fd, uint32_t total_reps) {
     return ok;
 }
 
+/**
+ * @brief Request the server to send a snapshot stream.
+ *
+ * Sends `RW_MSG_REQUEST_SNAPSHOT` with the client pid.
+ *
+ * Expected sync response:
+ * - `RW_MSG_ACK` / `RW_MSG_ERROR`
+ *
+ * Snapshot messages themselves (`RW_MSG_SNAPSHOT_BEGIN/CHUNK/END`) are delivered
+ * asynchronously and handled by the dispatcher + snapshot receiver.
+ *
+ * @param fd Connected client socket.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_request_snapshot(int fd) {
     rw_request_snapshot_t req;
     req.pid = (uint32_t)getpid();
@@ -295,6 +448,15 @@ int client_ipc_request_snapshot(int fd) {
     return ok;
 }
 
+/**
+ * @brief Ask the server to save results to a file.
+ *
+ * Sends `RW_MSG_SAVE_RESULTS` and an on-wire fixed-size path.
+ *
+ * @param fd Connected client socket.
+ * @param path Target filesystem path (server-side interpretation).
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_save_results(int fd, const char *path) {
     if (!path) return -1;
     rw_save_results_t req;
@@ -328,6 +490,15 @@ int client_ipc_save_results(int fd, const char *path) {
     return ok;
 }
 
+/**
+ * @brief Ask the server to load results from a file.
+ *
+ * Sends `RW_MSG_LOAD_RESULTS` and an on-wire fixed-size path.
+ *
+ * @param fd Connected client socket.
+ * @param path Source filesystem path (server-side interpretation).
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_load_results(int fd, const char *path) {
     if (!path) return -1;
     rw_load_results_t req;
@@ -361,6 +532,18 @@ int client_ipc_load_results(int fd, const char *path) {
     return ok;
 }
 
+/**
+ * @brief Gracefully disconnect from the server.
+ *
+ * Sends `RW_MSG_QUIT` with client pid and `stop_if_owner` flag.
+ *
+ * This is best-effort:
+ * - even if the server closes the socket before replying, the function returns 0
+ *
+ * @param fd Connected client socket.
+ * @param stop_if_owner If non-zero, request server shutdown if this client is the owner.
+ * @return Always 0.
+ */
 int client_ipc_quit(int fd, int stop_if_owner) {
     rw_quit_t q;
     q.pid = (uint32_t)getpid();
@@ -379,6 +562,18 @@ int client_ipc_quit(int fd, int stop_if_owner) {
     return 0;
 }
 
+/**
+ * @brief Request the server to stop a running simulation.
+ *
+ * Sends `RW_MSG_STOP_SIM` with client pid.
+ *
+ * Expected responses:
+ * - `RW_MSG_ACK` with @ref rw_ack_t where `request_type == RW_MSG_STOP_SIM`
+ * - `RW_MSG_ERROR` with @ref rw_error_t
+ *
+ * @param fd Connected client socket.
+ * @return 0 on success, -1 on failure.
+ */
 int client_ipc_stop_sim(int fd) {
     rw_stop_sim_t req;
     req.pid = (uint32_t)getpid();

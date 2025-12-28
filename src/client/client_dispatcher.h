@@ -30,9 +30,7 @@
  * - Is fed into snapshot_reciever.* and rendered when SNAPSHOT_END arrives.
  */
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+
 
 /** Start reader thread for @p fd. Returns 0 on success. */
 int dispatcher_start(int fd);
@@ -69,9 +67,9 @@ int dispatcher_send_and_wait(
     rw_msg_hdr_t *out_hdr,
     void **out_payload);
 
-#ifdef __cplusplus
-}
-#endif
+
+
+
 
 #endif //SEMPRACA_CLIENT_DISPATCHER_H
 
