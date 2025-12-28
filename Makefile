@@ -1,7 +1,7 @@
 CC = gcc
 CFLAGS = -std=c11 -Wall -Wextra -Wpedantic -g -MMD -MP
 LDFLAGS =
-LIBS =
+LIBS = -lm
 SRC_DIR = src
 BUILD_DIR = build
 

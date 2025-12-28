@@ -202,6 +202,7 @@ int ui_menu_run(const char *socket_path) {
     }
 
     log_info("Connected. WELCOME: size=%ux%u reps=%u K=%u", welcome.size.width, welcome.size.height, welcome.total_reps, welcome.k_max_steps);
+    client_snapshot_set_k_max(welcome.k_max_steps);
 
     /* Start single-reader dispatcher AFTER handshake. */
     if (dispatcher_start(fd) != 0) {
