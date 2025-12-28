@@ -64,4 +64,30 @@ int snapshot_broadcast(server_context_t *ctx,
                        const world_t *world,
                        const results_t *results);
 
+/**
+ * @brief Send a snapshot to a specific client.
+ *
+ * This function serializes and sends a snapshot to a single client identified
+ * by the file descriptor @p fd. It's useful for targeted responses, such as
+ * sending updated information to a specific client without broadcasting to
+ * all connected clients.
+ *
+ * @param fd      File descriptor of the client socket.
+ * @param world   World to snapshot.
+ * @param results Results to snapshot.
+ * @param snapshot_id Identifier for the snapshot, used to match requests and
+ *                    responses.
+ *
+ * @retval 0  Success (best-effort).
+ * @retval -1 Invalid arguments.
+ *
+ * @warning This function may perform blocking socket writes.
+ */
+int snapshot_send_to_client(int fd,
+                            const world_t *world,
+                            const results_t *results,
+                            uint32_t snapshot_id);
+
+uint32_t snapshot_next_id(void);
+
 #endif //SEMPRACA_SNAPSHOT_SENDER_H

@@ -153,6 +153,19 @@ int client_snapshot_chunk(const rw_snapshot_chunk_t *chunk) {
     return 0;
 }
 
+static int cell_radius(uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, int wrap) {
+    if (wrap) {
+        uint32_t dx = sx;
+        uint32_t dy = sy;
+        uint32_t dx_wrap = (w > sx) ? (w - sx) : 0u;
+        uint32_t dy_wrap = (h > sy) ? (h - sy) : 0u;
+        if (dx_wrap < dx) dx = dx_wrap;
+        if (dy_wrap < dy) dy = dy_wrap;
+        return (int)(dx + dy);
+    }
+    return (int)(sx + sy);
+}
+
 static void render_radial_summary(void) {
     uint32_t w = g_snap.size.width;
     uint32_t h = g_snap.size.height;
@@ -162,9 +175,12 @@ static void render_radial_summary(void) {
         return;
     }
 
-    int cx = (int)(w / 2u);
-    int cy = (int)(h / 2u);
-    int r_max = (int)((w - 1u - w / 2u) + (h - 1u - h / 2u));
+    /* Distance is measured from origin (0,0). For WRAP worlds use toroidal
+     * Manhattan distance; for obstacle worlds use standard Manhattan.
+     */
+    const int wrap = (g_snap.world_kind == RW_WIRE_WORLD_WRAP) ? 1 : 0;
+    int r_max = wrap ? (int)(w / 2u + h / 2u)
+                     : (int)((w ? w - 1u : 0u) + (h ? h - 1u : 0u));
     if (r_max < 0) {
         log_error("Invalid r_max");
         return;
@@ -184,18 +200,19 @@ static void render_radial_summary(void) {
     uint32_t non_obstacle_cells = 0;
     uint32_t used_cells = 0;
     double global_max_avg = 0.0;
+    int obstacles_present = 0;
 
     /* First pass: aggregate by radius. */
     for (uint32_t sy = 0; sy < h; ++sy) {
         for (uint32_t sx = 0; sx < w; ++sx) {
             uint32_t idx = sy * w + sx;
-            int x = (int)sx - cx;
-            int y = (int)sy - cy;
-            int r = abs(x) + abs(y);
+            int r = cell_radius(sx, sy, w, h, wrap);
             if (r < 0 || r > r_max) continue;
 
             int obstacle = g_snap.obstacles && g_snap.obstacles[idx];
-            if (!obstacle) {
+            if (obstacle) {
+                obstacles_present = 1;
+            } else {
                 cells[r]++;
                 non_obstacle_cells++;
             }
@@ -248,9 +265,7 @@ static void render_radial_summary(void) {
         for (uint32_t sy = 0; sy < h; ++sy) {
             for (uint32_t sx = 0; sx < w; ++sx) {
                 uint32_t idx = sy * w + sx;
-                int x = (int)sx - cx;
-                int y = (int)sy - cy;
-                int r = abs(x) + abs(y);
+                int r = cell_radius(sx, sy, w, h, wrap);
                 if (r < 0 || r > r_max) continue;
                 if (g_snap.obstacles && g_snap.obstacles[idx]) continue;
 
@@ -342,7 +357,7 @@ static void render_radial_summary(void) {
     }
 
     /* 3.4 Obstacles cause local increases. */
-    if (have_increase && max_increase >= 0.10 && summary_count < 6) {
+    if (have_increase && max_increase >= 0.10 && obstacles_present && summary_count < 6) {
         int pct = (int)lround(max_increase * 100.0);
         snprintf(summaries[summary_count++], sizeof(summaries[0]),
                  "Obstacles cause local increases of avg steps by up to %d%%.", pct);
