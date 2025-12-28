@@ -191,9 +191,12 @@ static void render_radial_summary(void) {
     uint32_t *n_used = (uint32_t *)calloc(bins, sizeof(uint32_t));
     double *sum_avg_steps = (double *)calloc(bins, sizeof(double));
     double *sum_p = (double *)calloc(bins, sizeof(double));
-    if (!cells || !n_used || !sum_avg_steps || !sum_p) {
+    uint64_t *sum_steps_r = (uint64_t *)calloc(bins, sizeof(uint64_t));
+    uint32_t *succ_count_r = (uint32_t *)calloc(bins, sizeof(uint32_t));
+    if (!cells || !n_used || !sum_avg_steps || !sum_p || !sum_steps_r || !succ_count_r) {
         log_error("Out of memory in radial summary");
         free(cells); free(n_used); free(sum_avg_steps); free(sum_p);
+        free(sum_steps_r); free(succ_count_r);
         return;
     }
 
@@ -220,17 +223,21 @@ static void render_radial_summary(void) {
             if (obstacle) continue;
 
             uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0u;
+            uint32_t succ = g_snap.succ_leq_k ? g_snap.succ_leq_k[idx] : 0u;
+            uint64_t sum_steps_cell = g_snap.sum_steps ? g_snap.sum_steps[idx] : 0u;
             if (trials == 0) continue;
             n_used[r]++;
             used_cells++;
 
-            if (g_snap.sum_steps) {
-                double avg_i = (double)g_snap.sum_steps[idx] / (double)trials;
-                sum_avg_steps[r] += avg_i;
+            sum_steps_r[r] += sum_steps_cell;
+            succ_count_r[r] += succ;
+
+            if (g_snap.sum_steps && succ > 0) {
+                double avg_i = (double)sum_steps_cell / (double)succ;
                 if (avg_i > global_max_avg) global_max_avg = avg_i;
             }
             if (g_snap.succ_leq_k) {
-                double p_i = (double)g_snap.succ_leq_k[idx] / (double)trials;
+                double p_i = (double)succ / (double)trials;
                 sum_p[r] += p_i;
             }
         }
@@ -242,12 +249,13 @@ static void render_radial_summary(void) {
     if (!avg_r || !p_r) {
         log_error("Out of memory in radial summary (avg arrays)");
         free(cells); free(n_used); free(sum_avg_steps); free(sum_p);
+        free(sum_steps_r); free(succ_count_r);
         free(avg_r); free(p_r);
         return;
     }
     for (int r = 0; r <= r_max; ++r) {
-        if (n_used[r] > 0 && g_snap.sum_steps) {
-            avg_r[r] = sum_avg_steps[r] / (double)n_used[r];
+        if (succ_count_r[r] > 0 && g_snap.sum_steps) {
+            avg_r[r] = (double)sum_steps_r[r] / (double)succ_count_r[r];
         } else {
             avg_r[r] = NAN;
         }
@@ -295,12 +303,12 @@ static void render_radial_summary(void) {
 
         printf("%-2d %5u ", r, cells[r]);
         if (isnan(avg)) {
-            printf("%10s ", "nan");
+            printf("%10s ", "0.0");
         } else {
             printf("%10.1f ", avg);
         }
         if (isnan(prob)) {
-            printf("%13s", "nan");
+            printf("%13s", "0.0");
         } else {
             printf("%13.3f", prob);
         }
@@ -391,6 +399,8 @@ static void render_radial_summary(void) {
     free(n_used);
     free(sum_avg_steps);
     free(sum_p);
+    free(sum_steps_r);
+    free(succ_count_r);
     free(avg_r);
     free(p_r);
 }
