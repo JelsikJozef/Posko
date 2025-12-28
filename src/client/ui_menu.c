@@ -103,12 +103,11 @@ static int menu_new_sim(int fd) {
         fflush(stdout);
         if (read_line(path, sizeof(path)) != 0) return -1;
 
-        rw_load_world_t req;
-        memset(&req, 0, sizeof(req));
-        snprintf(req.path, sizeof(req.path), "%s", path);
-        req.multi_user = (uint8_t)(multi ? 1 : 0);
-
-        return client_ipc_load_world(fd, &req);
+        /* RWRES contains both world + results; load both so summaries work. */
+        if (client_ipc_load_results(fd, path) != 0) {
+            return -1;
+        }
+        return 0;
     }
 
     rw_create_sim_t req;
@@ -214,6 +213,8 @@ int ui_menu_run(const char *socket_path) {
         if (client_ipc_query_status(fd, &st) != 0) {
             die("Failed to query status");
         }
+        /* Keep snapshot summaries in sync with the latest server K. */
+        client_snapshot_set_k_max(st.k_max_steps);
         print_status_summary(&st);
 
         printf("Main menu:\n");
@@ -224,6 +225,8 @@ int ui_menu_run(const char *socket_path) {
         printf("  5) Start simulation (from lobby)\n");
         printf("  6) Save results\n");
         printf("  7) Stop simulation\n");
+        printf("  8) Re-render last snapshot\n");
+        printf("  9) Dump cell from last snapshot\n");
         printf("  0) Quit\n");
         printf("Choice: ");
         fflush(stdout);
@@ -268,6 +271,17 @@ int ui_menu_run(const char *socket_path) {
             if (client_ipc_stop_sim(fd) != 0) {
                 log_error("Stop failed");
             }
+        } else if (choice == 8) {
+            if (client_snapshot_render_last() != 0) {
+                log_error("No snapshot to render");
+            }
+        } else if (choice == 9) {
+            uint32_t x = 0, y = 0;
+            if (prompt_u32("Cell x", &x) == 0 && prompt_u32("Cell y", &y) == 0) {
+                if (client_snapshot_dump_cell(x, y) != 0) {
+                    log_error("Cell dump failed");
+                }
+            }
         } else if (choice == 0) {
             int stop = 0;
             if (isatty(STDIN_FILENO)) {
@@ -276,6 +290,7 @@ int ui_menu_run(const char *socket_path) {
             (void)client_ipc_quit(fd, stop);
             dispatcher_stop();
             close(fd);
+            client_snapshot_free();
             return 0;
         } else {
             printf("Unknown choice.\n");
@@ -285,5 +300,6 @@ int ui_menu_run(const char *socket_path) {
     (void)client_ipc_quit(fd, 0);
     dispatcher_stop();
     close(fd);
+    client_snapshot_free();
     return 0;
 }

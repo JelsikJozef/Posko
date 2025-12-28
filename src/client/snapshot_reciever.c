@@ -405,9 +405,116 @@ static void render_radial_summary(void) {
     free(p_r);
 }
 
+static void print_legend(void) {
+    printf("Legend (grid preview):\n");
+    printf("  ' ' : no trials for cell\n");
+    printf("  '..@': increasing probability of success within K ('.' low -> '@' high)\n");
+    printf("  '##': obstacle cell\n");
+    printf("\n");
+}
+
+static void render_cell_grid_preview(void) {
+    const uint32_t w = g_snap.size.width;
+    const uint32_t h = g_snap.size.height;
+    if (w == 0 || h == 0 || g_snap.cell_count != w * h) {
+        log_error("Invalid snapshot dimensions for grid preview");
+        return;
+    }
+
+    const uint32_t max_rows = 12u; /* keep output compact */
+    const uint32_t max_cols = 24u;
+    uint32_t rows = h < max_rows ? h : max_rows;
+    uint32_t cols = w < max_cols ? w : max_cols;
+
+    printf("GRID PREVIEW (top-left %ux%u of %ux%u)\n", cols, rows, w, h);
+    printf("y/x");
+    for (uint32_t x = 0; x < cols; ++x) {
+        printf(" %2u", x);
+    }
+    printf("\n");
+
+    for (uint32_t y = 0; y < rows; ++y) {
+        printf("%3u", y);
+        for (uint32_t x = 0; x < cols; ++x) {
+            uint32_t idx = y * w + x;
+            int obstacle = g_snap.obstacles ? g_snap.obstacles[idx] : 0;
+            if (obstacle) {
+                printf(" ##");
+                continue;
+            }
+            uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0u;
+            uint32_t succ = g_snap.succ_leq_k ? g_snap.succ_leq_k[idx] : 0u;
+            char c = '.';
+            if (trials == 0) {
+                c = ' ';
+            } else {
+                double p = (succ == 0) ? 0.0 : (double)succ / (double)trials;
+                size_t palette_idx = (size_t)lrint(p * (double)(strlen(SNAP_PALETTE) - 1));
+                if (palette_idx >= strlen(SNAP_PALETTE)) palette_idx = strlen(SNAP_PALETTE) - 1;
+                c = SNAP_PALETTE[palette_idx];
+            }
+            printf("  %c", c);
+        }
+        printf("\n");
+    }
+    printf("\n");
+}
+
 int client_snapshot_end(void) {
     /* Render assembled snapshot. */
     render_radial_summary();
+    print_legend();
+    render_cell_grid_preview();
+    return 0;
+}
+
+int client_snapshot_render_last(void) {
+    if (g_snap.cell_count == 0 || g_snap.size.width == 0 || g_snap.size.height == 0) {
+        log_error("No snapshot available");
+        return -1;
+    }
+    render_radial_summary();
+    print_legend();
+    render_cell_grid_preview();
+    return 0;
+}
+
+int client_snapshot_dump_cell(uint32_t x, uint32_t y) {
+    const uint32_t w = g_snap.size.width;
+    const uint32_t h = g_snap.size.height;
+    if (w == 0 || h == 0 || g_snap.cell_count != w * h) {
+        log_error("No snapshot available");
+        return -1;
+    }
+    if (x >= w || y >= h) {
+        log_error("Cell out of bounds (x=%u y=%u)", (unsigned)x, (unsigned)y);
+        return -1;
+    }
+
+    uint32_t idx = y * w + x;
+    int obstacle = g_snap.obstacles ? g_snap.obstacles[idx] : 0;
+    uint32_t trials = g_snap.trials ? g_snap.trials[idx] : 0u;
+    uint32_t succ = g_snap.succ_leq_k ? g_snap.succ_leq_k[idx] : 0u;
+    uint64_t sum_steps = g_snap.sum_steps ? g_snap.sum_steps[idx] : 0u;
+
+    printf("SNAPSHOT CELL (%u,%u)\n", (unsigned)x, (unsigned)y);
+    printf("  obstacle: %s\n", obstacle ? "yes" : "no");
+    printf("  trials  : %u\n", trials);
+    printf("  succ<=K : %u\n", succ);
+    printf("  avg_steps_if_succ: ");
+    if (succ == 0) {
+        printf("n/a\n");
+    } else {
+        double avg = (double)sum_steps / (double)succ;
+        printf("%.3f\n", avg);
+    }
+    if (trials > 0) {
+        double p = (double)succ / (double)trials;
+        printf("  p<=K   : %.6f\n", p);
+    } else {
+        printf("  p<=K   : n/a (no trials)\n");
+    }
+    printf("\n");
     return 0;
 }
 
