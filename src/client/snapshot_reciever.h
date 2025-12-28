@@ -75,6 +75,16 @@ int client_snapshot_chunk(const rw_snapshot_chunk_t *chunk);
 int client_snapshot_end(void);
 
 /**
+ * @brief Render the last assembled snapshot again (radial summary + small grid).
+ */
+int client_snapshot_render_last(void);
+
+/**
+ * @brief Dump one cell from the last snapshot to stdout.
+ */
+int client_snapshot_dump_cell(uint32_t x, uint32_t y);
+
+/**
  * @brief Cache K (k_max_steps) from WELCOME/status for snapshot summaries.
  */
 void client_snapshot_set_k_max(uint32_t k_max_steps);

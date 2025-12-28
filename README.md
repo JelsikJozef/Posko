@@ -17,6 +17,8 @@ Komunikácia prebieha cez Unix-domain socket (AF_UNIX) – vhodné pre Linux ser
   - [2) Join existing simulation](#2-join-existing-simulation)
   - [5) Start simulation](#5-start-simulation)
   - [4) Request snapshot](#4-request-snapshot)
+  - [8) Re-render last snapshot](#8-re-render-last-snapshot)
+  - [9) Dump cell from last snapshot](#9-dump-cell-from-last-snapshot)
   - [6) Save results](#6-save-results)
   - [7) Stop simulation](#7-stop-simulation)
   - [3) Restart finished simulation](#3-restart-finished-simulation)
@@ -148,8 +150,34 @@ Poznámka: momentálne server generuje prekážky deterministicky (seed + percen
   - `SNAPSHOT_BEGIN`
   - 0..N `SNAPSHOT_CHUNK`
   - `SNAPSHOT_END`
+- Po dokončení príjmu klient vytlačí **radial summary** + kompaktný **grid preview** (ľavý horný roh, max 24x12), aby bolo vidieť aj per-cell vzory.
+- Legend pre grid:
+  - `' '` : bunka bez trialov
+  - `..@` : rastúca pravdepodobnosť úspechu v rámci K ('.' nízka → '@' vysoká)
+  - `##` : prekážka (obstacle)
 
-Snapshot je určený pre vizualizáciu/stavové dáta (world + výsledky) počas behu.
+### 5) Start simulation
+
+- Použi, keď je server v stave `LOBBY`.
+- Klient pošle `START_SIM`.
+- Server začne počítať replikácie.
+  - Server loguje `Replication X/Y completed`.
+  - Server môže posielať `PROGRESS` notifikácie, ale klient ich v menu režime
+    len konzumuje (kvôli stabilite promptu).
+
+### 8) Re-render last snapshot
+
+- Znovu zobrazí posledný prijatý snapshot (radial summary + grid preview + legenda).
+- Už nežiada server o nový snapshot.
+
+### 9) Dump cell from last snapshot
+
+- Vypýta si súradnice `x`, `y` a vypíše údaje z posledného snapshotu pre konkrétnu bunku:
+  - obstacle áno/nie
+  - trials, succ<=K
+  - priemerné kroky pri úspechu (ak existujú)
+  - p(success<=K)
+- Funguje iba po tom, čo bol prijatý snapshot.
 
 ### 6) Save results
 
